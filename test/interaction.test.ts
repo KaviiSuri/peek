@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { highlightedTab, initialInteraction, moveHighlight, setQuery } from "../src/interaction/interaction";
+import {
+  enterSelectionMode,
+  highlightedTab,
+  initialInteraction,
+  moveHighlight,
+  navigationDeltaForKey,
+  returnToTypingMode,
+  selectionDigit,
+  setQuery,
+  visibleChoiceForDigit,
+} from "../src/interaction/interaction";
 import type { PeekTab } from "../src/shared/model";
 
 const tabs: PeekTab[] = [
@@ -19,14 +29,43 @@ describe("interaction", () => {
 
   it("refreshes the default highlight when the query changes", () => {
     const ranked = [tabs[0]!, tabs[1]!];
-    const previousPartial = { query: "retry", highlightedTabId: 20 };
+    const previousPartial = { ...initialInteraction(tabs), query: "retry", highlightedTabId: 20 };
     expect(setQuery(previousPartial, "orion retry", ranked).highlightedTabId).toBe(10);
     expect(setQuery(previousPartial, "none", []).highlightedTabId).toBeUndefined();
   });
 
   it("preserves a valid manual highlight for same-query model reconciliation and replaces a removed one", () => {
-    const manuallyHighlighted = { query: "orion retry", highlightedTabId: 20 };
+    const manuallyHighlighted = { ...initialInteraction(tabs), query: "orion retry", highlightedTabId: 20 };
     expect(setQuery(manuallyHighlighted, "orion retry", tabs).highlightedTabId).toBe(20);
     expect(setQuery(manuallyHighlighted, "orion retry", tabs.slice(0, 1)).highlightedTabId).toBe(10);
+  });
+
+  it("round-trips through selection mode with the exact typing selection", () => {
+    const typing = { ...initialInteraction(tabs), query: "orion 2481" };
+    const selection = { start: 2, end: 9, direction: "backward" as const };
+    const selecting = enterSelectionMode(typing, selection);
+
+    expect(selecting).toMatchObject({ mode: "selection", query: "orion 2481", typingSelection: selection });
+    expect(returnToTypingMode(selecting)).toMatchObject({ mode: "typing", query: "orion 2481", typingSelection: selection });
+  });
+
+  it("enables j/k and numeric interpretation only in selection mode", () => {
+    const typing = initialInteraction(tabs);
+    const selecting = enterSelectionMode(typing, typing.typingSelection);
+    expect(navigationDeltaForKey(typing, "j")).toBeUndefined();
+    expect(navigationDeltaForKey(typing, "k")).toBeUndefined();
+    expect(selectionDigit(typing, "2")).toBeUndefined();
+    expect(navigationDeltaForKey(selecting, "j")).toBe(1);
+    expect(navigationDeltaForKey(selecting, "k")).toBe(-1);
+    expect(selectionDigit(selecting, "2")).toBe("2");
+    expect(navigationDeltaForKey(typing, "ArrowDown")).toBe(1);
+  });
+
+  it("maps only digits 1–9 to the corresponding supplied visible choice", () => {
+    const visible = tabs.slice(0, 1);
+    expect(visibleChoiceForDigit(visible, "1")?.id).toBe(10);
+    expect(visibleChoiceForDigit(visible, "2")).toBeUndefined();
+    expect(visibleChoiceForDigit(visible, "0")).toBeUndefined();
+    expect(visibleChoiceForDigit(visible, "j")).toBeUndefined();
   });
 });

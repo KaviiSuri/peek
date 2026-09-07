@@ -1,4 +1,15 @@
-import { highlightedTab, initialInteraction, moveHighlight, setQuery, type InteractionState } from "./interaction/interaction";
+import {
+  enterSelectionMode,
+  highlightedTab,
+  initialInteraction,
+  moveHighlight,
+  navigationDeltaForKey,
+  returnToTypingMode,
+  selectionDigit,
+  setQuery,
+  type InteractionState,
+  type TextSelection,
+} from "./interaction/interaction";
 import { meaningfulLocation, searchTabs } from "./search/search";
 import type { InitMessage, PeekModel, PeekTab } from "./shared/model";
 import { decodeDismissMessage, decodeInitMessage, decodeModelMessage } from "./shared/overlay-protocol";
@@ -27,6 +38,10 @@ const styles = `
     box-shadow: 0 26px 80px rgba(6, 9, 18, .28), 0 2px 8px rgba(6, 9, 18, .12);
     backdrop-filter: blur(22px) saturate(1.2);
   }
+  .palette:focus-within {
+    border-color: light-dark(rgba(54, 91, 231, .48), rgba(146, 165, 255, .52));
+    box-shadow: 0 26px 80px rgba(6, 9, 18, .28), 0 2px 8px rgba(6, 9, 18, .12), 0 0 0 3px light-dark(rgba(54, 91, 231, .12), rgba(146, 165, 255, .14));
+  }
   .search {
     display: flex; align-items: center; gap: 11px;
     min-height: 58px; padding: 0 18px;
@@ -39,7 +54,8 @@ const styles = `
     color: inherit; caret-color: light-dark(#365be7, #92a5ff);
   }
   input::placeholder { color: light-dark(#858a96, #858994); font-weight: 430; }
-  .count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: light-dark(#777d89, #898d98); }
+  .mode, .count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: light-dark(#777d89, #898d98); }
+  .mode { padding: 3px 7px; border-radius: 999px; background: light-dark(#edf0f7, #30323a); }
   .results { margin: 0; padding: 7px; height: calc(100% - 58px); overflow: auto; list-style: none; }
   .row {
     min-height: 56px; display: flex; align-items: center; gap: 12px;
@@ -64,6 +80,7 @@ const styles = `
   .stack { min-width: 0; flex: 1; display: grid; gap: 2px; }
   .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 19px; font-weight: 610; letter-spacing: -.01em; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/17px ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#707684, #9397a2); }
+  .digit { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 6px; font: 650 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#3d56ad, #c4ceff); background: light-dark(#f4f6ff, #292e42); box-shadow: inset 0 0 0 1px light-dark(#d6ddfa, #4d587d); }
   .state { min-height: 100%; display: grid; place-items: center; padding: 26px; text-align: center; color: light-dark(#686e7a, #a4a8b2); font-size: 13px; line-height: 1.45; }
   .state strong { display: block; margin-bottom: 5px; color: light-dark(#303642, #e4e5e8); font-size: 14px; }
   @media (prefers-reduced-motion: no-preference) { .palette { animation: peek-in 90ms ease-out; } }
@@ -82,9 +99,12 @@ function createOverlayController(): OverlayController {
   let host: HTMLElement | undefined;
   let priorFocus: HTMLElement | null = null;
   let applyModel: ((model: PeekModel) => void) | undefined;
+  let disposeSessionListeners: (() => void) | undefined;
   const closedSessions = new Set<string>();
 
   function teardown(restoreFocus: boolean): void {
+    disposeSessionListeners?.();
+    disposeSessionListeners = undefined;
     host?.remove();
     host = undefined;
     activeSessionId = undefined;
@@ -93,11 +113,11 @@ function createOverlayController(): OverlayController {
     priorFocus = null;
   }
 
-  function cancel(): void {
+  function cancel(restoreFocus = true): void {
     const sessionId = activeSessionId;
     if (!sessionId) return;
     closedSessions.add(sessionId);
-    teardown(true);
+    teardown(restoreFocus);
     void chrome.runtime.sendMessage({ kind: "peek/cancel", sessionId }).catch(() => undefined);
   }
 
@@ -133,10 +153,16 @@ function createOverlayController(): OverlayController {
       input.setAttribute("role", "combobox");
       input.setAttribute("aria-expanded", "true");
       input.setAttribute("aria-controls", "peek-results");
+      input.setAttribute("aria-describedby", "peek-mode-hint");
       if (model.status === "error") input.readOnly = true;
+      const modeHint = document.createElement("span");
+      modeHint.id = "peek-mode-hint";
+      modeHint.className = "mode";
+      modeHint.setAttribute("role", "status");
+      modeHint.setAttribute("aria-live", "polite");
       const count = document.createElement("span");
       count.className = "count";
-      search.append(input, count);
+      search.append(input, modeHint, count);
 
       const list = document.createElement("ul");
       list.className = "results";
@@ -149,6 +175,8 @@ function createOverlayController(): OverlayController {
       let results = searchTabs(model.tabs, "");
       let state: InteractionState = initialInteraction(results);
       let committing = false;
+      let composing = false;
+      let focusExitTimer: ReturnType<typeof setTimeout> | undefined;
 
       function stateItem(titleText: string, detailText: string): HTMLLIElement {
         const item = document.createElement("li");
@@ -161,8 +189,49 @@ function createOverlayController(): OverlayController {
         return item;
       }
 
+      function visibleRows(): HTMLElement[] {
+        const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="option"]'));
+        const listBounds = list.getBoundingClientRect();
+        if (listBounds.height <= 0) return [];
+        return rows.filter((row) => {
+          const bounds = row.getBoundingClientRect();
+          return bounds.height > 0 && bounds.top >= listBounds.top && bounds.bottom <= listBounds.bottom;
+        }).slice(0, 9);
+      }
+
+      function refreshVisibleDigits(): void {
+        for (const badge of list.querySelectorAll(".digit")) badge.remove();
+        if (state.mode !== "selection") return;
+        for (const [index, row] of visibleRows().entries()) {
+          const badge = document.createElement("span");
+          badge.className = "digit";
+          badge.setAttribute("aria-hidden", "true");
+          badge.textContent = String(index + 1);
+          row.append(badge);
+        }
+      }
+
+      function syncMode(): void {
+        const selecting = state.mode === "selection";
+        input.readOnly = selecting || committing || model.status === "error";
+        input.setAttribute("aria-readonly", String(input.readOnly));
+        input.setAttribute("aria-keyshortcuts", selecting
+          ? "Tab ArrowUp ArrowDown J K Enter 1 2 3 4 5 6 7 8 9 Escape"
+          : "Tab ArrowUp ArrowDown Enter Escape");
+        modeHint.textContent = selecting ? "Select · 1–9 visible" : "Type · Tab to select";
+        palette.dataset.mode = state.mode;
+      }
+
+      function restoreTypingSelection(): void {
+        const selection = state.typingSelection;
+        input.focus({ preventScroll: true });
+        input.setSelectionRange(selection.start, selection.end, selection.direction);
+      }
+
       function render(): void {
         list.replaceChildren();
+        input.removeAttribute("aria-activedescendant");
+        syncMode();
         count.textContent = model.status === "ready" ? `${results.length} ${results.length === 1 ? "tab" : "tabs"}` : "";
         if (model.status === "loading") {
           list.append(stateItem("Loading open tabs", "You can start typing."));
@@ -222,6 +291,8 @@ function createOverlayController(): OverlayController {
         }
         const selectedRow = list.querySelector<HTMLElement>('[aria-selected="true"]');
         if (typeof selectedRow?.scrollIntoView === "function") selectedRow.scrollIntoView({ block: "nearest" });
+        refreshVisibleDigits();
+        requestAnimationFrame(refreshVisibleDigits);
       }
 
       async function commit(tab: PeekTab | undefined): Promise<void> {
@@ -237,32 +308,101 @@ function createOverlayController(): OverlayController {
         if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && host) {
           committing = false;
           model = { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." };
-          input.readOnly = true;
+          results = [];
+          state = setQuery(state, state.query, results);
           render();
           input.focus({ preventScroll: true });
         }
       }
 
+      input.addEventListener("compositionstart", () => { composing = true; });
+      input.addEventListener("compositionend", () => { composing = false; });
       input.addEventListener("input", () => {
+        if (state.mode !== "typing") return;
         results = searchTabs(model.tabs, input.value);
         state = setQuery(state, input.value, results);
         render();
       });
       input.addEventListener("keydown", (event) => {
-        if (event.isComposing || event.keyCode === 229) return;
+        if (composing || event.isComposing || event.keyCode === 229) return;
         if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
           cancel();
-        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          return;
+        }
+        const modified = event.altKey || event.ctrlKey || event.metaKey;
+        if (event.key === "Tab") {
+          if (event.shiftKey || modified) return;
           event.preventDefault();
-          state = moveHighlight(state, results, event.key === "ArrowDown" ? 1 : -1);
+          event.stopPropagation();
+          if (state.mode === "typing") {
+            const selection: TextSelection = {
+              start: input.selectionStart ?? input.value.length,
+              end: input.selectionEnd ?? input.value.length,
+              direction: input.selectionDirection ?? "none",
+            };
+            state = enterSelectionMode(state, selection);
+            render();
+          } else {
+            state = returnToTypingMode(state);
+            render();
+            restoreTypingSelection();
+          }
+          return;
+        }
+        if (model.status !== "ready" || modified) return;
+        const navigationDelta = navigationDeltaForKey(state, event.key);
+        if (navigationDelta !== undefined) {
+          event.preventDefault();
+          state = moveHighlight(state, results, navigationDelta);
           render();
-        } else if (event.key === "Enter") {
+          return;
+        }
+        const digit = selectionDigit(state, event.key);
+        if (digit !== undefined) {
+          const currentlyVisible = new Set(visibleRows());
+          const labelledRows = Array.from(list.querySelectorAll<HTMLElement>('[role="option"]')).filter((row) => {
+            const badge = row.querySelector<HTMLElement>(".digit");
+            return badge !== null && currentlyVisible.has(row);
+          });
+          const visibleTabs = labelledRows.map((row) => results.find((tab) => row.id === `peek-tab-${tab.id}`)).filter((tab): tab is PeekTab => tab !== undefined);
+          const displayedDigits = labelledRows.map((row) => row.querySelector<HTMLElement>(".digit")?.textContent ?? "");
+          const choiceIndex = displayedDigits.indexOf(digit);
+          const choice = choiceIndex < 0 ? undefined : visibleTabs[choiceIndex];
+          if (choice) {
+            event.preventDefault();
+            void commit(choice);
+            return;
+          }
+        }
+        if (event.key === "Enter") {
           event.preventDefault();
           void commit(highlightedTab(state, results));
         }
       });
+      list.addEventListener("scroll", refreshVisibleDigits, { passive: true });
+      const clearFocusExit = () => {
+        if (focusExitTimer !== undefined) clearTimeout(focusExitTimer);
+        focusExitTimer = undefined;
+      };
+      const handleFocusIn = () => { clearFocusExit(); };
+      const handleFocusOut = () => {
+        clearFocusExit();
+        focusExitTimer = setTimeout(() => {
+          focusExitTimer = undefined;
+          if (host && shadow.activeElement === null) cancel(false);
+        }, 0);
+      };
+      window.addEventListener("resize", refreshVisibleDigits);
+      input.addEventListener("focusin", handleFocusIn);
+      input.addEventListener("focusout", handleFocusOut);
+      disposeSessionListeners = () => {
+        window.removeEventListener("resize", refreshVisibleDigits);
+        input.removeEventListener("focusin", handleFocusIn);
+        input.removeEventListener("focusout", handleFocusOut);
+        clearFocusExit();
+      };
       backdrop.addEventListener("pointerdown", (event) => {
         if (event.target === backdrop) cancel();
       });

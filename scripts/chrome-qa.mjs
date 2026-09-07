@@ -229,7 +229,7 @@ async function waitForOverlayClosed(client, sessionId) {
 }
 
 async function press(client, sessionId, key, code = key, modifiers = 0) {
-  const keyCode = { Enter: 13, Escape: 27, ArrowDown: 40, ArrowUp: 38, k: 75, " ": 32 }[key] ?? key.toUpperCase().charCodeAt(0);
+  const keyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowLeft: 37, ArrowDown: 40, ArrowUp: 38, j: 74, k: 75, " ": 32 }[key] ?? key.toUpperCase().charCodeAt(0);
   await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
   await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
 }
@@ -254,6 +254,66 @@ async function overlayResultTabIds(client, sessionId) {
   return ids;
 }
 
+async function overlayInputState(client, sessionId) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  let inputNode;
+  let paletteNode;
+  const visit = (node) => {
+    const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+    if (node.nodeName === "INPUT" && attributes["aria-label"] === "Find a tab by title or URL") inputNode = node;
+    if (attributes.class?.split(/\s+/).includes("palette")) paletteNode = node;
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  assert(inputNode && paletteNode, "Could not resolve overlay input and palette");
+  const { object } = await client.send("DOM.resolveNode", { nodeId: inputNode.nodeId }, sessionId);
+  const evaluated = await client.send("Runtime.callFunctionOn", {
+    objectId: object.objectId,
+    functionDeclaration: "function(){return {value:this.value,selectionStart:this.selectionStart,selectionEnd:this.selectionEnd,selectionDirection:this.selectionDirection,readOnly:this.readOnly}}",
+    returnByValue: true,
+  }, sessionId);
+  const paletteAttributes = Object.fromEntries(Array.from({ length: (paletteNode.attributes?.length ?? 0) / 2 }, (_, index) => [paletteNode.attributes[index * 2], paletteNode.attributes[index * 2 + 1]]));
+  return { ...evaluated.result.value, mode: paletteAttributes["data-mode"] };
+}
+
+async function setOverlaySelection(client, sessionId, start, end, direction) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  let inputNode;
+  const visit = (node) => {
+    const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+    if (node.nodeName === "INPUT" && attributes["aria-label"] === "Find a tab by title or URL") inputNode = node;
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  assert(inputNode, "Could not resolve overlay input for selection update");
+  const { object } = await client.send("DOM.resolveNode", { nodeId: inputNode.nodeId }, sessionId);
+  await client.send("Runtime.callFunctionOn", {
+    objectId: object.objectId,
+    functionDeclaration: "function(start,end,direction){this.setSelectionRange(start,end,direction)}",
+    arguments: [{ value: start }, { value: end }, { value: direction }],
+  }, sessionId);
+}
+
+async function overlayDigitRows(client, sessionId) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  const attributes = (node) => Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+  const text = (node) => `${node.nodeValue ?? ""}${(node.children ?? []).map(text).join("")}`;
+  const rows = [];
+  const visit = (node) => {
+    const attrs = attributes(node);
+    if (attrs.role === "option" && attrs.id?.startsWith("peek-tab-")) {
+      const digit = (node.children ?? []).find((child) => attributes(child).class?.split(/\s+/).includes("digit"));
+      rows.push({ id: Number(attrs.id.slice("peek-tab-".length)), digit: digit ? text(digit) : undefined });
+    }
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  return rows;
+}
+
 async function selectedOverlayTabId(client, sessionId) {
   const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   let selectedId;
@@ -270,8 +330,26 @@ async function selectedOverlayTabId(client, sessionId) {
 async function replaceOverlayQuery(client, sessionId, query) {
   await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, commands: ["SelectAll"] }, sessionId);
   await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 }, sessionId);
-  await client.send("Input.insertText", { text: query }, sessionId);
-  await waitFor(`query value ${query}`, async () => {
+  if (query) {
+    await client.send("Input.insertText", { text: query }, sessionId);
+  } else {
+    const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+    let inputNode;
+    const visit = (node) => {
+      const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+      if (node.nodeName === "INPUT" && attributes["aria-label"] === "Find a tab by title or URL") inputNode = node;
+      for (const child of node.children ?? []) visit(child);
+      for (const shadow of node.shadowRoots ?? []) visit(shadow);
+    };
+    visit(document.root);
+    assert(inputNode, "Could not resolve overlay input to clear its query");
+    const { object } = await client.send("DOM.resolveNode", { nodeId: inputNode.nodeId }, sessionId);
+    await client.send("Runtime.callFunctionOn", {
+      objectId: object.objectId,
+      functionDeclaration: "function(){this.value='';this.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}))}",
+    }, sessionId);
+  }
+  await waitFor(`query value ${query || "<empty>"}`, async () => {
     const combobox = axRole(await axTree(client, sessionId), "combobox")[0];
     return combobox?.value?.value === query ? true : undefined;
   });
@@ -722,6 +800,121 @@ async function main() {
     const siteShortcut = await client.send("Runtime.evaluate", { expression: "document.querySelector('p').textContent", returnByValue: true }, sourceSession);
     assert(siteShortcut.result.value === "Site shortcut received", "Closed-Peek site shortcut did not reach the page");
 
+    // PEEK-22 review boundaries: focus exit cancels without reversal; resize refreshes displayed choices.
+    const beforeShiftTab = await browserState();
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "Shift+Tab first delivered selection");
+    await press(client, sourceSession, "Tab", "Tab", 8);
+    await waitForOverlayClosed(client, sourceSession);
+    const shiftTabDestination = await client.send("Runtime.evaluate", { expression: "document.activeElement?.id", returnByValue: true }, sourceSession);
+    const afterShiftTab = await browserState();
+    assert(shiftTabDestination.result.value === "prior-focus", `Shift+Tab destination was ${JSON.stringify(shiftTabDestination.result.value)}, expected prior-focus`);
+    assert(afterShiftTab.lastFocusedWindowId === beforeShiftTab.lastFocusedWindowId && sameActiveTabs(afterShiftTab, beforeShiftTab), "Shift+Tab focus-exit cancellation changed browser tab/window attention");
+
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 200, deviceScaleFactor: 1, mobile: false }, sourceSession);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "resize first delivered selection");
+    await press(client, sourceSession, "Tab");
+    const shortDigitRows = await waitFor("one readable short-viewport digit", async () => {
+      const rows = await overlayDigitRows(client, sourceSession);
+      return rows.filter((row) => row.digit).length === 1 ? rows : undefined;
+    });
+    await capture(client, sourceSession, "14-selection-short-one-digit.png");
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 720, deviceScaleFactor: 1, mobile: false }, sourceSession);
+    const expandedDigitRows = await waitFor("expanded viewport digit refresh", async () => {
+      const rows = await overlayDigitRows(client, sourceSession);
+      return rows[1]?.digit === "2" ? rows : undefined;
+    });
+    await capture(client, sourceSession, "15-selection-expanded-digits.png");
+    const resizedNumericTargetId = expandedDigitRows.value[1].id;
+    await press(client, sourceSession, "2", "Digit2");
+    await waitForOverlayClosed(client, sourceSession);
+    const resizedCommitState = await browserState();
+    const resizedFocusedWindow = resizedCommitState.windows.find((window) => window.id === resizedCommitState.lastFocusedWindowId);
+    assert(resizedFocusedWindow?.tabs.some((tab) => tab.active && tab.id === resizedNumericTargetId), "Resized digit 2 did not commit its displayed second row");
+    await client.send("Emulation.clearDeviceMetricsOverride", {}, sourceSession);
+    await focusSource();
+    const reviewBoundaryEvidence = {
+      shiftTab: { before: activeTabIdentity(beforeShiftTab), after: activeTabIdentity(afterShiftTab), destinationId: shiftTabDestination.result.value, overlayClosed: true },
+      resize: { shortDigitRows: shortDigitRows.value, expandedDigitRows: expandedDigitRows.value, committedTabId: resizedNumericTargetId },
+    };
+
+    // PEEK-14: production keyboard mode, exact caret, visible digits and browser composition routes.
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "keyboard mode first delivered selection");
+    await replaceOverlayQuery(client, sourceSession, "source2");
+    await setOverlaySelection(client, sourceSession, 1, 6, "backward");
+    const typingBeforeSelection = await overlayInputState(client, sourceSession);
+    await press(client, sourceSession, "Tab");
+    const selectingState = await overlayInputState(client, sourceSession);
+    assert(selectingState.mode === "selection" && selectingState.readOnly === true && selectingState.value === "source2", "Tab did not enter selection mode without changing the digit-bearing query");
+    await setOverlaySelection(client, sourceSession, 0, 0, "none");
+    await press(client, sourceSession, "ArrowLeft");
+    const disturbedSelectionState = await overlayInputState(client, sourceSession);
+    assert(disturbedSelectionState.selectionStart === 0 && disturbedSelectionState.selectionEnd === 0, "Selection-mode caret disturbance was not established");
+    await press(client, sourceSession, "j", "KeyJ");
+    await press(client, sourceSession, "Tab");
+    const restoredTypingState = await overlayInputState(client, sourceSession);
+    assert(restoredTypingState.mode === "typing" && restoredTypingState.readOnly === false, "Second Tab did not return to typing mode");
+    assert(restoredTypingState.value === "source2" && restoredTypingState.selectionStart === 1 && restoredTypingState.selectionEnd === 6 && restoredTypingState.selectionDirection === "backward", `Typing selection was not restored exactly: ${JSON.stringify(restoredTypingState)}`);
+
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "visible digit first delivered selection");
+    const visibleKeyboardIds = await waitFor("at least two visible keyboard choices", async () => {
+      const ids = await overlayResultTabIds(client, sourceSession);
+      return ids.length >= 2 ? ids : undefined;
+    });
+    await press(client, sourceSession, "Tab");
+    await press(client, sourceSession, "j", "KeyJ");
+    const selectedAfterJ = await selectedOverlayTabId(client, sourceSession);
+    assert(selectedAfterJ === visibleKeyboardIds.value[1], `j selected ${selectedAfterJ}, expected second displayed row ${visibleKeyboardIds.value[1]}`);
+    await press(client, sourceSession, "k", "KeyK");
+    const selectedAfterK = await selectedOverlayTabId(client, sourceSession);
+    assert(selectedAfterK === visibleKeyboardIds.value[0], `k selected ${selectedAfterK}, expected first displayed row ${visibleKeyboardIds.value[0]}`);
+    await capture(client, sourceSession, "13-selection-mode-visible-digits.png");
+    await press(client, sourceSession, "2", "Digit2");
+    await waitForOverlayClosed(client, sourceSession);
+    const numericCommittedState = await browserState();
+    const numericFocusedWindow = numericCommittedState.windows.find((window) => window.id === numericCommittedState.lastFocusedWindowId);
+    assert(numericFocusedWindow?.tabs.some((tab) => tab.active && tab.id === visibleKeyboardIds.value[1]), "Digit 2 did not commit the exact second displayed row");
+    await focusSource();
+
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "IME first delivered selection");
+    await client.send("Input.imeSetComposition", { text: "に", selectionStart: 1, selectionEnd: 1 }, sourceSession);
+    await press(client, sourceSession, "Enter");
+    const composingState = await overlayInputState(client, sourceSession);
+    assert(composingState.value === "に" && composingState.mode === "typing", "Browser composition text or typing mode was lost");
+    await client.send("Input.insertText", { text: "に" }, sourceSession);
+    const committedCompositionState = await overlayInputState(client, sourceSession);
+    assert(committedCompositionState.value.includes("に"), "Committed browser composition text was not retained as query text");
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+
+    const keyboardEvidence = {
+      typingBeforeSelection,
+      selectingState,
+      disturbedSelectionState,
+      restoredTypingState,
+      visibleKeyboardIds: visibleKeyboardIds.value,
+      selectedAfterJ,
+      selectedAfterK,
+      numericCommittedTabId: visibleKeyboardIds.value[1],
+      ime: {
+        route: "CDP Input.imeSetComposition through branded Chrome",
+        composingState,
+        committedCompositionState,
+        limit: "Browser composition events are exercised, but no physical OS IME candidate-window interaction is automated in this disposable run.",
+      },
+    };
+
     const geometryTabs = [
       { id: 902, windowId: 92, title: "Fix retry in Orion scheduler", url: orionUrl, lastAccessed: 20, current: false },
       { id: sourceChromeTab.id, windowId: sourceChromeTab.windowId, title: "Peek source page", url: sourceUrl, lastAccessed: 30, current: true },
@@ -857,9 +1050,12 @@ async function main() {
       await client.send("Accessibility.enable", {}, nativeSession);
       const absentHost = await client.send("Runtime.evaluate", { expression: "document.querySelector('#peek-extension-host') === null", returnByValue: true }, nativeSession);
       assert(absentHost.result.value === true, "Fresh native-shortcut tab was already injected before physical invocation");
-      const stateWithNativeTab = await browserState();
-      const nativeChromeTab = stateWithNativeTab.windows.flatMap((window) => window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === nativeSourceUrl);
-      assert(nativeChromeTab, "Fresh native-shortcut Chrome tab was not found");
+      const nativeTabReady = await waitFor("fresh native-shortcut tab enumeration", async () => {
+        const state = await browserState();
+        const tab = state.windows.flatMap((window) => window.tabs.map((candidate) => ({ ...candidate, windowId: window.id }))).find((candidate) => candidate.url === nativeSourceUrl);
+        return tab ? { state, tab } : undefined;
+      }, 10000);
+      const nativeChromeTab = nativeTabReady.value.tab;
       await evalWorker(`chrome.tabs.update(${nativeChromeTab.id},{active:true}).then(()=>chrome.windows.update(${nativeChromeTab.windowId},{focused:true}))`);
       await client.send("Target.activateTarget", { targetId: nativePage.value.targetId });
       await client.send("Page.bringToFront", {}, nativeSession);
@@ -907,6 +1103,8 @@ async function main() {
       },
       attention: attentionEvidence,
       search: searchEvidence,
+      keyboard: keyboardEvidence,
+      reviewBoundaries: reviewBoundaryEvidence,
       centering: {
         before: {
           buildSha: "c9ad0ea152925c1855c3edf1ceceb7bfd4aae6fc",
@@ -939,6 +1137,11 @@ async function main() {
         currentTargetNoOp: "pass: exact source window/tab/url remained active",
         staleTargetErrorNoSubstitution: "pass",
         closedPeekSiteShortcut: "pass",
+        typingSelectionModeRoundTrip: "pass: digit-bearing query and exact backward selection range restored",
+        selectionNavigationAndVisibleDigitCommit: "pass: j/k selected displayed rows and digit 2 committed the exact second displayed row",
+        browserCompositionGuard: "pass through branded-Chrome CDP Input.imeSetComposition; physical OS IME candidate UI remains an explicit evidence limit",
+        shiftTabFocusExit: "pass: overlay cancelled while the source prior-focus destination and browser tab/window attention were preserved",
+        resizeDigitCoherence: "pass: short viewport exposed one digit, expanded viewport refreshed the second label, and digit 2 committed that displayed row",
         lightDarkNarrowShortScreenshots: "captured",
         physicalKeyboardShortcutInvocation,
       },
