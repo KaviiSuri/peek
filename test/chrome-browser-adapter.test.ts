@@ -20,13 +20,14 @@ beforeEach(() => {
 });
 
 describe("Chrome browser adapter", () => {
-  it("lists tabs only from normal non-incognito windows and excludes Peek's own pages", async () => {
+  it("excludes per-tab incognito entries, non-normal windows and Peek's own pages from listing", async () => {
     getAll.mockResolvedValue([
       {
         id: 1, type: "normal", incognito: false,
         tabs: [
           { id: 10, windowId: 1, title: "Source", url: "https://source.test", lastAccessed: 4, active: true, incognito: false },
           { id: 11, windowId: 1, title: "Peek", url: "chrome-extension://peek-extension/fallback.html", incognito: false },
+          { id: 12, windowId: 1, title: "Private tab", url: "https://private-tab.test", incognito: true },
         ],
       },
       { id: 2, type: "normal", incognito: true, tabs: [{ id: 20, windowId: 2, title: "Private", url: "https://private.test", incognito: true }] },
@@ -60,6 +61,19 @@ describe("Chrome browser adapter", () => {
     await expect(chromeBrowserAdapter.revalidateTarget(21, 7)).resolves.toEqual({ id: 21, windowId: 7, current: false });
 
     getWindow.mockResolvedValue({ id: 7, type: "normal", incognito: true });
+    await expect(chromeBrowserAdapter.revalidateTarget(21, 7)).resolves.toBeUndefined();
+  });
+
+  it("rejects Peek's own extension URL during exact target revalidation", async () => {
+    getTab.mockResolvedValue({
+      id: 21,
+      windowId: 7,
+      active: false,
+      incognito: false,
+      url: "chrome-extension://peek-extension/fallback.html",
+    });
+    getWindow.mockResolvedValue({ id: 7, type: "normal", incognito: false });
+
     await expect(chromeBrowserAdapter.revalidateTarget(21, 7)).resolves.toBeUndefined();
   });
 

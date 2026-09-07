@@ -74,6 +74,23 @@ describe("production background composition", () => {
     expect(fake.calls).toEqual(["list", "open", "revalidate", "dismiss"]);
   });
 
+  it("does not let a cancel from another sender discard the source tab's session", async () => {
+    const fake = fakeBrowser();
+    const app = createBackgroundApp(fake.adapter);
+    const opened = await app.invoke({ id: 1, windowId: 4 });
+
+    app.cancel({ kind: "peek/cancel", sessionId: opened.sessionId }, 99);
+    const response = await app.commit({
+      kind: "peek/commit",
+      sessionId: opened.sessionId,
+      targetTabId: 2,
+      targetWindowId: 9,
+    }, 1);
+
+    expect(response).toEqual({ ok: true });
+    expect(fake.calls).toEqual(["list", "open", "revalidate", "dismiss", "activate"]);
+  });
+
   it("rejects commits from a different sender tab", async () => {
     const fake = fakeBrowser();
     const app = createBackgroundApp(fake.adapter);

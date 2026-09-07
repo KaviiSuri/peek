@@ -72,6 +72,18 @@ describe("ordinary-page overlay", () => {
     expect(sent.slice(before)).toEqual([{ kind: "peek/cancel", sessionId: "session-3" }]);
   });
 
+  it("cancels on backdrop pointerdown without sending a commit or activating a target", async () => {
+    const before = sent.length;
+    const { host, root } = openOverlay("session-backdrop");
+    const backdrop = root.querySelector<HTMLElement>(".backdrop")!;
+    backdrop.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(host.isConnected).toBe(false);
+    expect(sent.slice(before)).toEqual([{ kind: "peek/cancel", sessionId: "session-backdrop" }]);
+    expect(sent.slice(before).some((message) => typeof message === "object" && message !== null && "kind" in message && message.kind === "peek/commit")).toBe(false);
+  });
+
   it("keeps a deliberate error state focused and cancellable", () => {
     listener?.({
       kind: "peek/init", sessionId: "session-error", sourceTabId: 1, sourceWindowId: 1,
