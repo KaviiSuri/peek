@@ -20,6 +20,12 @@ beforeAll(async () => {
   await import("../src/overlay");
 });
 
+function keydown(input: HTMLInputElement, key: string, init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+  input.dispatchEvent(event);
+  return event;
+}
+
 function openOverlay(sessionId = "session-1") {
   listener?.({
     kind: "peek/init",
@@ -240,6 +246,113 @@ describe("ordinary-page overlay", () => {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await Promise.resolve();
     expect(sent).toContainEqual({ kind: "peek/commit", sessionId: "session-2", targetTabId: 2, targetWindowId: 2 });
+  });
+
+  it("keeps digits as query text in typing mode and supports a lossless Tab selection-mode round trip", () => {
+    const { root, input } = openOverlay("session-mode-roundtrip");
+    input.value = "orion 2481";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.setSelectionRange(2, 9, "backward");
+
+    expect(keydown(input, "Tab").defaultPrevented).toBe(true);
+    expect(root.querySelector<HTMLElement>(".palette")?.dataset.mode).toBe("selection");
+    expect(input.readOnly).toBe(true);
+    expect(input.value).toBe("orion 2481");
+    expect(root.querySelector(".mode")?.textContent).toContain("Select");
+
+    expect(keydown(input, "Tab").defaultPrevented).toBe(true);
+    expect(root.querySelector<HTMLElement>(".palette")?.dataset.mode).toBe("typing");
+    expect(input.readOnly).toBe(false);
+    expect(input.value).toBe("orion 2481");
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(9);
+    expect(input.selectionDirection).toBe("backward");
+    expect(root.activeElement).toBe(input);
+  });
+
+  it("routes j/k, arrows and visible numeric choices through real DOM events without activating on highlight", async () => {
+    const before = sent.length;
+    const { root, input } = openOverlay("session-selection-keys");
+    keydown(input, "Tab");
+    expect(root.querySelectorAll(".digit")).toHaveLength(2);
+
+    keydown(input, "j");
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-1");
+    expect(sent.slice(before)).toEqual([]);
+    keydown(input, "k");
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-2");
+    keydown(input, "ArrowDown");
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-1");
+
+    keydown(input, "2");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-selection-keys", targetTabId: 1, targetWindowId: 1 }]);
+  });
+
+  it("commits the row reached by Tab, j and Enter through the production event route", async () => {
+    const before = sent.length;
+    const { input } = openOverlay("session-tab-j-enter");
+    keydown(input, "Tab");
+    keydown(input, "j");
+    keydown(input, "Enter");
+    await Promise.resolve();
+
+    expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-tab-j-enter", targetTabId: 1, targetWindowId: 1 }]);
+  });
+
+  it("maps digits to the rows visible now and never retains stale or missing numeric targets", async () => {
+    const before = sent.length;
+    const { root, input } = openOverlay("session-visible-digits");
+    keydown(input, "Tab");
+    const list = root.querySelector<HTMLElement>(".results")!;
+    const rows = Array.from(root.querySelectorAll<HTMLElement>('[role="option"]'));
+    vi.spyOn(list, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 56, height: 56 } as DOMRect);
+    vi.spyOn(rows[0]!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 56 } as DOMRect);
+    vi.spyOn(rows[1]!, "getBoundingClientRect").mockReturnValue({ top: 56, bottom: 112 } as DOMRect);
+    list.dispatchEvent(new Event("scroll"));
+    expect(rows[0]?.querySelector(".digit")?.textContent).toBe("1");
+    expect(rows[1]?.querySelector(".digit")).toBeNull();
+
+    keydown(input, "2");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([]);
+
+    vi.mocked(rows[0]!.getBoundingClientRect).mockReturnValue({ top: -56, bottom: 0 } as DOMRect);
+    vi.mocked(rows[1]!.getBoundingClientRect).mockReturnValue({ top: 0, bottom: 56 } as DOMRect);
+    list.dispatchEvent(new Event("scroll"));
+    expect(rows[0]?.querySelector(".digit")).toBeNull();
+    expect(rows[1]?.querySelector(".digit")?.textContent).toBe("1");
+    keydown(input, "1");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-visible-digits", targetTabId: 1, targetWindowId: 1 }]);
+  });
+
+  it("does not intercept composing keys and leaves Shift+Tab as a non-trapping focus path", () => {
+    const before = sent.length;
+    const { host, root, input } = openOverlay("session-ime-focus");
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "に" }));
+    for (const key of ["Tab", "j", "2", "Enter", "Escape"]) {
+      expect(keydown(input, key).defaultPrevented).toBe(false);
+    }
+    expect(host.isConnected).toBe(true);
+    expect(sent.slice(before)).toEqual([]);
+    input.value = "に";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "に" }));
+    expect(input.value).toBe("に");
+
+    input.setSelectionRange(1, 1);
+    keydown(input, "Tab");
+    const shiftTab = keydown(input, "Tab", { shiftKey: true });
+    expect(shiftTab.defaultPrevented).toBe(false);
+    expect(root.querySelector<HTMLElement>(".palette")?.dataset.mode).toBe("selection");
+    input.blur();
+    expect(root.activeElement).not.toBe(input);
+    input.focus();
+    keydown(input, "Tab");
+    expect(root.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(1);
+    expect(input.selectionEnd).toBe(1);
   });
 
   it("keeps Escape operable while a commit response is pending and prevents duplicate commits", async () => {
