@@ -40,10 +40,40 @@ function openOverlay(sessionId = "session-1") {
 describe("ordinary-page overlay", () => {
   it("appends a coherent populated composition and focuses the input on first reveal", () => {
     const { root, input } = openOverlay();
+    expect(root.querySelector("style")?.textContent).toContain("place-items: center");
+    expect(root.querySelector("style")?.textContent).not.toContain("place-items: start center");
     expect(root.querySelectorAll('[role="option"]')).toHaveLength(2);
     expect(root.textContent).toContain("Orion retry");
     expect(root.textContent).toContain("github.com/acme/orion/pull/2");
     expect(root.activeElement).toBe(input);
+  });
+
+  it("accepts a first query character in the stable loading state and preserves it when the model arrives", () => {
+    listener?.({
+      kind: "peek/init", sessionId: "session-loading", sourceTabId: 1, sourceWindowId: 1,
+      model: { status: "loading", tabs: [] },
+    }, {}, () => undefined);
+    const host = document.querySelector<HTMLElement>("#peek-extension-host")!;
+    const root = host.shadowRoot!;
+    const input = root.querySelector<HTMLInputElement>("input")!;
+    expect(root.textContent).toContain("Loading open tabs");
+
+    input.value = "o";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    listener?.({
+      kind: "peek/model", sessionId: "session-loading",
+      model: {
+        status: "ready",
+        tabs: [
+          { id: 2, windowId: 2, title: "Orion retry", url: "https://github.com/acme/orion/pull/2", lastAccessed: 20, current: false },
+          { id: 1, windowId: 1, title: "Source", url: "https://source.test", lastAccessed: 30, current: true },
+        ],
+      },
+    }, {}, () => undefined);
+
+    expect(input.value).toBe("o");
+    expect(root.querySelectorAll('[role="option"]')).toHaveLength(2);
+    expect(root.textContent).toContain("Orion retry");
   });
 
   it("filters, moves highlight, and commits only on Enter", async () => {

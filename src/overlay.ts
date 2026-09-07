@@ -1,12 +1,7 @@
-import { Schema } from "effect";
 import { highlightedTab, initialInteraction, moveHighlight, setQuery, type InteractionState } from "./interaction/interaction";
 import { meaningfulLocation, searchTabs } from "./search/search";
-import { decodeUnknown, InitMessageSchema, type InitMessage, type PeekTab } from "./shared/model";
-
-const DismissMessageSchema = Schema.Struct({
-  kind: Schema.Literal("peek/dismiss"),
-  sessionId: Schema.String,
-});
+import type { InitMessage, PeekModel, PeekTab } from "./shared/model";
+import { decodeDismissMessage, decodeInitMessage, decodeModelMessage } from "./shared/overlay-protocol";
 
 const CONTROLLER_KEY = "__peekOverlayControllerV1";
 
@@ -15,8 +10,8 @@ const styles = `
   * { box-sizing: border-box; }
   .backdrop {
     position: fixed; inset: 0; z-index: 2147483647;
-    display: grid; place-items: start center;
-    padding: min(17vh, 150px) 16px 24px;
+    display: grid; place-items: center;
+    padding: 24px 16px;
     background: color-mix(in srgb, #080a0f 18%, transparent);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -78,6 +73,7 @@ const styles = `
 
 interface OverlayController {
   init(message: InitMessage): void;
+  update(sessionId: string, model: PeekModel): void;
   dismiss(sessionId: string): void;
 }
 
@@ -85,12 +81,14 @@ function createOverlayController(): OverlayController {
   let activeSessionId: string | undefined;
   let host: HTMLElement | undefined;
   let priorFocus: HTMLElement | null = null;
+  let applyModel: ((model: PeekModel) => void) | undefined;
   const closedSessions = new Set<string>();
 
   function teardown(restoreFocus: boolean): void {
     host?.remove();
     host = undefined;
     activeSessionId = undefined;
+    applyModel = undefined;
     if (restoreFocus && document.hasFocus() && priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
     priorFocus = null;
   }
@@ -109,6 +107,7 @@ function createOverlayController(): OverlayController {
       if (host) teardown(false);
       activeSessionId = message.sessionId;
       priorFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      let model = message.model;
 
       const nextHost = document.createElement("div");
       nextHost.id = "peek-extension-host";
@@ -129,12 +128,12 @@ function createOverlayController(): OverlayController {
       input.type = "text";
       input.autocomplete = "off";
       input.spellcheck = false;
-      input.placeholder = message.model.status === "error" ? "Tabs unavailable" : "Find a tab by title or URL";
+      input.placeholder = model.status === "error" ? "Tabs unavailable" : "Find a tab by title or URL";
       input.setAttribute("aria-label", "Find a tab by title or URL");
       input.setAttribute("role", "combobox");
       input.setAttribute("aria-expanded", "true");
       input.setAttribute("aria-controls", "peek-results");
-      if (message.model.status === "error") input.readOnly = true;
+      if (model.status === "error") input.readOnly = true;
       const count = document.createElement("span");
       count.className = "count";
       search.append(input, count);
@@ -147,7 +146,7 @@ function createOverlayController(): OverlayController {
       backdrop.append(palette);
       shadow.append(style, backdrop);
 
-      let results = searchTabs(message.model.tabs, "");
+      let results = searchTabs(model.tabs, "");
       let state: InteractionState = initialInteraction(results);
       let committing = false;
 
@@ -164,9 +163,13 @@ function createOverlayController(): OverlayController {
 
       function render(): void {
         list.replaceChildren();
-        count.textContent = message.model.status === "ready" ? `${results.length} ${results.length === 1 ? "tab" : "tabs"}` : "";
-        if (message.model.status === "error") {
-          list.append(stateItem("Could not load tabs", message.model.message ?? "Close Peek and try again."));
+        count.textContent = model.status === "ready" ? `${results.length} ${results.length === 1 ? "tab" : "tabs"}` : "";
+        if (model.status === "loading") {
+          list.append(stateItem("Loading open tabs", "You can start typing."));
+          return;
+        }
+        if (model.status === "error") {
+          list.append(stateItem("Could not load tabs", model.message ?? "Close Peek and try again."));
           return;
         }
         if (results.length === 0) {
@@ -234,7 +237,7 @@ function createOverlayController(): OverlayController {
         if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && host) {
           committing = false;
           input.disabled = false;
-          message = { ...message, model: { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." } };
+          model = { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." };
           input.readOnly = true;
           render();
           input.focus({ preventScroll: true });
@@ -242,7 +245,7 @@ function createOverlayController(): OverlayController {
       }
 
       input.addEventListener("input", () => {
-        results = searchTabs(message.model.tabs, input.value);
+        results = searchTabs(model.tabs, input.value);
         state = setQuery(state, input.value, results);
         render();
       });
@@ -265,10 +268,23 @@ function createOverlayController(): OverlayController {
         if (event.target === backdrop) cancel();
       });
 
+      applyModel = (nextModel) => {
+        model = nextModel;
+        input.readOnly = model.status === "error";
+        results = searchTabs(model.tabs, state.query);
+        state = setQuery(state, state.query, results);
+        render();
+      };
+
       render();
       host = nextHost;
       document.documentElement.append(nextHost);
       input.focus({ preventScroll: true });
+    },
+
+    update(sessionId, model) {
+      if (activeSessionId !== sessionId || closedSessions.has(sessionId)) return;
+      applyModel?.(model);
     },
 
     dismiss(sessionId) {
@@ -284,13 +300,19 @@ if (!globalWindow[CONTROLLER_KEY]) {
   const controller = createOverlayController();
   globalWindow[CONTROLLER_KEY] = controller;
   chrome.runtime.onMessage.addListener((unknownMessage, _sender, sendResponse) => {
-    const init = decodeUnknown(InitMessageSchema, unknownMessage);
+    const init = decodeInitMessage(unknownMessage);
     if (init) {
       controller.init(init);
       sendResponse({ ok: true });
       return false;
     }
-    const dismiss = decodeUnknown(DismissMessageSchema, unknownMessage);
+    const model = decodeModelMessage(unknownMessage);
+    if (model) {
+      controller.update(model.sessionId, model.model);
+      sendResponse({ ok: true });
+      return false;
+    }
+    const dismiss = decodeDismissMessage(unknownMessage);
     if (dismiss) {
       controller.dismiss(dismiss.sessionId);
       sendResponse({ ok: true });

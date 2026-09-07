@@ -3,7 +3,7 @@ import { createBackgroundApp } from "../src/background/app";
 import type { BrowserAdapter, SourceTab, TargetTab } from "../src/background/browser-adapter";
 import { moveHighlight, initialInteraction, highlightedTab } from "../src/interaction/interaction";
 import { searchTabs } from "../src/search/search";
-import type { InitMessage, PeekTab } from "../src/shared/model";
+import type { InitMessage, ModelMessage, PeekTab } from "../src/shared/model";
 
 function fixture(): PeekTab[] {
   return [
@@ -15,26 +15,29 @@ function fixture(): PeekTab[] {
 function fakeBrowser(overrides: Partial<BrowserAdapter> = {}) {
   const calls: string[] = [];
   let delivered: InitMessage | undefined;
+  let updated: ModelMessage | undefined;
   const adapter: BrowserAdapter = {
     async listEligibleTabs(_source: SourceTab) { calls.push("list"); return fixture(); },
     async openOverlay(_source: SourceTab, message: InitMessage) { calls.push("open"); delivered = message; },
+    async updateOverlay(_sourceTabId: number, message: ModelMessage) { calls.push("update"); updated = message; },
     async dismissOverlay(_sourceTabId: number, _sessionId: string) { calls.push("dismiss"); },
     async revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined> { calls.push("revalidate"); return { id: tabId, windowId, current: false }; },
     async activateTarget(_target: TargetTab) { calls.push("activate"); },
     ...overrides,
   };
-  return { adapter, calls, delivered: () => delivered };
+  return { adapter, calls, delivered: () => delivered, updated: () => updated };
 }
 
 describe("production background composition", () => {
-  it("runs invoke, model, filter, highlight, exact revalidation, dismiss, tab activation and window focus adapter path", async () => {
+  it("opens a stable input before model work, then runs filter, highlight, exact revalidation, dismiss, activation and focus", async () => {
     const fake = fakeBrowser();
     const app = createBackgroundApp(fake.adapter);
     const opened = await app.invoke({ id: 1, windowId: 4 });
-    const delivered = fake.delivered();
-    expect(delivered?.model.tabs).toHaveLength(2);
+    expect(fake.delivered()?.model).toEqual({ status: "loading", tabs: [] });
+    const updated = fake.updated();
+    expect(updated?.model.tabs).toHaveLength(2);
 
-    const results = searchTabs(delivered?.model.tabs ?? [], "orion");
+    const results = searchTabs(updated?.model.tabs ?? [], "orion");
     const state = moveHighlight(initialInteraction(results), results, 1);
     const target = highlightedTab(state, results) ?? results[0];
     expect(target?.id).toBe(2);
@@ -46,7 +49,7 @@ describe("production background composition", () => {
       targetWindowId: target!.windowId,
     }, 1);
     expect(response).toEqual({ ok: true });
-    expect(fake.calls).toEqual(["list", "open", "revalidate", "dismiss", "activate"]);
+    expect(fake.calls).toEqual(["open", "list", "update", "revalidate", "dismiss", "activate"]);
   });
 
   it("cancels without revalidation, dismissal, tab activation or window focus calls", async () => {
@@ -54,7 +57,7 @@ describe("production background composition", () => {
     const app = createBackgroundApp(fake.adapter);
     const opened = await app.invoke({ id: 1, windowId: 4 });
     app.cancel({ kind: "peek/cancel", sessionId: opened.sessionId }, 1);
-    expect(fake.calls).toEqual(["list", "open"]);
+    expect(fake.calls).toEqual(["open", "list", "update"]);
   });
 
   it("fails a vanished or mismatched target before teardown and never activates another tab", async () => {
@@ -63,7 +66,7 @@ describe("production background composition", () => {
     const opened = await app.invoke({ id: 1, windowId: 4 });
     const response = await app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 1);
     expect(response).toEqual({ ok: false, error: "That tab is no longer open." });
-    expect(fake.calls).toEqual(["list", "open"]);
+    expect(fake.calls).toEqual(["open", "list", "update"]);
   });
 
   it("dismisses a current-target commit without activation", async () => {
@@ -71,7 +74,7 @@ describe("production background composition", () => {
     const app = createBackgroundApp(fake.adapter);
     const opened = await app.invoke({ id: 1, windowId: 4 });
     await app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 1, targetWindowId: 4 }, 1);
-    expect(fake.calls).toEqual(["list", "open", "revalidate", "dismiss"]);
+    expect(fake.calls).toEqual(["open", "list", "update", "revalidate", "dismiss"]);
   });
 
   it("does not let a cancel from another sender discard the source tab's session", async () => {
@@ -88,7 +91,7 @@ describe("production background composition", () => {
     }, 1);
 
     expect(response).toEqual({ ok: true });
-    expect(fake.calls).toEqual(["list", "open", "revalidate", "dismiss", "activate"]);
+    expect(fake.calls).toEqual(["open", "list", "update", "revalidate", "dismiss", "activate"]);
   });
 
   it("rejects commits from a different sender tab", async () => {
@@ -97,6 +100,6 @@ describe("production background composition", () => {
     const opened = await app.invoke({ id: 1, windowId: 4 });
     const response = await app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 99);
     expect(response.ok).toBe(false);
-    expect(fake.calls).toEqual(["list", "open"]);
+    expect(fake.calls).toEqual(["open", "list", "update"]);
   });
 });

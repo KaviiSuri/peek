@@ -11,7 +11,7 @@ export interface PeekTab {
 }
 
 export interface PeekModel {
-  readonly status: "ready" | "error";
+  readonly status: "loading" | "ready" | "error";
   readonly tabs: readonly PeekTab[];
   readonly message?: string | undefined;
 }
@@ -27,7 +27,7 @@ const TabSchema = Schema.Struct({
 });
 
 const ModelSchema = Schema.Struct({
-  status: Schema.Literal("ready", "error"),
+  status: Schema.Literal("loading", "ready", "error"),
   tabs: Schema.Array(TabSchema),
   message: Schema.optional(Schema.String),
 });
@@ -37,6 +37,12 @@ export const InitMessageSchema = Schema.Struct({
   sessionId: Schema.String,
   sourceTabId: Schema.Number,
   sourceWindowId: Schema.Number,
+  model: ModelSchema,
+});
+
+export const ModelMessageSchema = Schema.Struct({
+  kind: Schema.Literal("peek/model"),
+  sessionId: Schema.String,
   model: ModelSchema,
 });
 
@@ -53,6 +59,7 @@ export const CancelMessageSchema = Schema.Struct({
 });
 
 export type InitMessage = Schema.Schema.Type<typeof InitMessageSchema>;
+export type ModelMessage = Schema.Schema.Type<typeof ModelMessageSchema>;
 export type CommitMessage = Schema.Schema.Type<typeof CommitMessageSchema>;
 export type CancelMessage = Schema.Schema.Type<typeof CancelMessageSchema>;
 

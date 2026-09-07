@@ -6,7 +6,10 @@ const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.me
 describe("MV3 metadata scope", () => {
   it("uses reserved action invocation with a remappable Control+Space suggestion", () => {
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.commands._execute_action.suggested_key.default).toBe("Ctrl+Space");
+    expect(manifest.commands._execute_action.suggested_key).toEqual({
+      default: "Ctrl+Space",
+      mac: "MacCtrl+Space",
+    });
     expect(manifest.action.default_popup).toBeUndefined();
   });
 

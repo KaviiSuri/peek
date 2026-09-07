@@ -37,6 +37,20 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
       }
 
       const sessionId = crypto.randomUUID();
+      sessions.set(sessionId, { source });
+      try {
+        await Effect.runPromise(boundary("open overlay", () => browser.openOverlay(source, {
+          kind: "peek/init",
+          sessionId,
+          sourceTabId: source.id,
+          sourceWindowId: source.windowId,
+          model: { status: "loading", tabs: [] },
+        })));
+      } catch (error) {
+        sessions.delete(sessionId);
+        throw error;
+      }
+
       let model: PeekModel;
       try {
         const tabs = await Effect.runPromise(boundary("list tabs", () => browser.listEligibleTabs(source)));
@@ -49,18 +63,17 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
         };
       }
 
-      sessions.set(sessionId, { source });
-      try {
-        await Effect.runPromise(boundary("open overlay", () => browser.openOverlay(source, {
-          kind: "peek/init",
-          sessionId,
-          sourceTabId: source.id,
-          sourceWindowId: source.windowId,
-          model,
-        })));
-      } catch (error) {
-        sessions.delete(sessionId);
-        throw error;
+      if (sessions.has(sessionId)) {
+        try {
+          await Effect.runPromise(boundary("update overlay", () => browser.updateOverlay(source.id, {
+            kind: "peek/model",
+            sessionId,
+            model,
+          })));
+        } catch (error) {
+          sessions.delete(sessionId);
+          throw error;
+        }
       }
       return { sessionId, model };
     },

@@ -1,5 +1,5 @@
 import type { BrowserAdapter, SourceTab, TargetTab } from "./browser-adapter";
-import type { InitMessage, PeekTab } from "../shared/model";
+import type { InitMessage, ModelMessage, PeekTab } from "../shared/model";
 
 function isEligibleWindow(window: chrome.windows.Window): boolean {
   return window.type === "normal" && window.incognito !== true;
@@ -37,6 +37,10 @@ export const chromeBrowserAdapter: BrowserAdapter = {
       files: ["overlay.js"],
     });
     await chrome.tabs.sendMessage(source.id, message);
+  },
+
+  async updateOverlay(sourceTabId: number, message: ModelMessage): Promise<void> {
+    await chrome.tabs.sendMessage(sourceTabId, message);
   },
 
   async dismissOverlay(sourceTabId: number, sessionId: string): Promise<void> {
