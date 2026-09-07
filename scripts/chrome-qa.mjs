@@ -13,11 +13,45 @@ const profile = resolve(tempRoot, `profile-${process.pid}`);
 const fixtures = resolve(root, "scripts/fixtures");
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
+const searchFixtureFacts = [
+  ["orion-retry-pr", "Fix flaky retry in scheduler", "github", "/acme-labs/orion/pull/2481"],
+  ["orion-reconnect", "Fix flaky websocket reconnect test", "github", "/acme-labs/orion/pull/2478"],
+  ["orion-scheduler", "Scheduler drops jobs under load", "github", "/acme-labs/orion/issues/2455"],
+  ["orion-retry-issue", "Flaky test: scheduler retry backoff", "github", "/acme-labs/orion/issues/2460"],
+  ["orion-bump", "Bump orion to v3.2 and update deps", "github", "/acme-labs/orion/pull/2490"],
+  ["orion-home", "acme-labs/orion", "github", "/acme-labs/orion"],
+  ["atlas-leak", "Atlas: memory leak in tile cache", "github", "/acme-labs/atlas/issues/1207"],
+  ["atlas-cache", "Cache eviction for tile store", "github", "/acme-labs/atlas/pull/1210"],
+  ["atlas-retry", "Fix flaky retry in uploader", "github", "/acme-labs/atlas/pull/1188"],
+  ["auth-874", "Refactor auth middleware", "github", "/nimbus/pulse/pull/874"],
+  ["auth-880", "Refactor auth middleware (part 2)", "github", "/nimbus/pulse/pull/880"],
+  ["auth-869", "Auth token refresh race condition", "github", "/nimbus/pulse/issues/869"],
+  ["auth-rfc", "RFC: unify auth middleware", "github", "/nimbus/pulse/discussions/71"],
+  ["payments-idempotency", "Add idempotency keys to payments", "github", "/orbit-hq/ledger/pull/333"],
+  ["payments-retry", "Duplicate charge on retry", "github", "/orbit-hq/ledger/issues/330"],
+  ["payments-flaky", "Fix flaky payment webhook test", "github", "/orbit-hq/ledger/pull/341"],
+  ["beacon-issue", "Beacon: dark mode contrast fixes", "github", "/vela/beacon/issues/55"],
+  ["beacon-pr", "Dark mode contrast fixes for beacon", "github", "/vela/beacon/pull/58"],
+  ["orion-ci", "CI · orion — run #2481 failing", "github", "/acme-labs/orion/actions/runs/2481"],
+  ["notifications", "Notifications", "github", "/notifications"],
+  ["revenue", "Q3 revenue forecast v4", "docs", "/spreadsheets/d/revenue/edit"],
+  ["hiring", "Hiring pipeline tracker", "docs", "/spreadsheets/d/hiring/edit"],
+  ["postmortem", "Orion incident postmortem", "docs", "/document/d/postmortem/edit"],
+  ["peek-discovery", "Peek — product discovery", "docs", "/document/d/peek/edit"],
+  ["linear", "PEEK-8 Which result layout is clearest", "linear", "/camb/issue/PEEK-8"],
+  ["figma", "Peek — palette explorations", "figma", "/file/peek-explorations"],
+  ["notion", "Eng weekly notes", "notion", "/camb/eng-weekly"],
+  ["stackoverflow", "Query all tabs across Chrome windows", "stackoverflow", "/questions/12345678"],
+  ["mdn", "chrome.tabs.query() — reference", "mdn", "/API/chrome.tabs/query"],
+  ["local", "Vite + Peek dev server", "local", "/popup/index.html"],
+];
+
 class CdpClient {
   constructor(url) {
     this.socket = new WebSocket(url);
     this.nextId = 0;
     this.pending = new Map();
+    this.listeners = new Map();
   }
 
   async connect() {
@@ -28,11 +62,14 @@ class CdpClient {
     this.socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
-      else pending.resolve(message.result);
+      if (pending) {
+        this.pending.delete(message.id);
+        clearTimeout(pending.timer);
+        if (message.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
+        else pending.resolve(message.result);
+        return;
+      }
+      for (const listener of this.listeners.get(message.method) ?? []) listener(message.params, message.sessionId);
     });
   }
 
@@ -46,6 +83,13 @@ class CdpClient {
       this.pending.set(id, { resolve: resolveResult, reject, method, timer });
       this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
+  }
+
+  on(method, listener) {
+    const listeners = this.listeners.get(method) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(method, listeners);
+    return () => listeners.delete(listener);
   }
 
   close() {
@@ -70,6 +114,10 @@ async function waitFor(label, check, timeoutMs = 5000) {
     await delay(10);
   }
   throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError}` : ""}`);
+}
+
+function escapeHtml(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
 async function startFixtureServer() {
@@ -129,6 +177,33 @@ async function attach(client, targetId) {
   return (await client.send("Target.attachToTarget", { targetId, flatten: true })).sessionId;
 }
 
+async function createInterceptedFixturePage(client, url, title) {
+  const { targetId } = await client.send("Target.createTarget", { url: "about:blank", background: true });
+  const sessionId = await attach(client, targetId);
+  await client.send("Page.enable", {}, sessionId);
+  await client.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }, sessionId);
+  let interceptionError;
+  const removeListener = client.on("Fetch.requestPaused", (params, eventSessionId) => {
+    if (eventSessionId !== sessionId) return;
+    const body = Buffer.from(`<!doctype html><html><head><title>${escapeHtml(title)}</title></head><body><main><h1>Synthetic Peek search fixture</h1><p>${escapeHtml(url)}</p></main></body></html>`).toString("base64");
+    void client.send("Fetch.fulfillRequest", {
+      requestId: params.requestId,
+      responseCode: 200,
+      responseHeaders: [{ name: "Content-Type", value: "text/html; charset=utf-8" }, { name: "Cache-Control", value: "no-store" }],
+      body,
+    }, sessionId).catch((error) => { interceptionError = error; });
+  });
+  await client.send("Page.navigate", { url }, sessionId);
+  await waitFor(`intercepted fixture ${url}`, async () => {
+    if (interceptionError) throw interceptionError;
+    const result = await client.send("Runtime.evaluate", { expression: "document.title", returnByValue: true }, sessionId);
+    return result.result.value === title ? true : undefined;
+  }, 10000);
+  removeListener();
+  await client.send("Fetch.disable", {}, sessionId);
+  return { targetId, sessionId, url, title };
+}
+
 async function axTree(client, sessionId) {
   return (await client.send("Accessibility.getFullAXTree", {}, sessionId)).nodes;
 }
@@ -166,6 +241,19 @@ async function capture(client, sessionId, name) {
   return path;
 }
 
+async function overlayResultTabIds(client, sessionId) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  const ids = [];
+  const visit = (node) => {
+    const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+    if (attributes.role === "option" && attributes.id?.startsWith("peek-tab-")) ids.push(Number(attributes.id.slice("peek-tab-".length)));
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  return ids;
+}
+
 async function selectedOverlayTabId(client, sessionId) {
   const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   let selectedId;
@@ -177,6 +265,16 @@ async function selectedOverlayTabId(client, sessionId) {
   };
   visit(document.root);
   return selectedId;
+}
+
+async function replaceOverlayQuery(client, sessionId, query) {
+  await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, commands: ["SelectAll"] }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 }, sessionId);
+  await client.send("Input.insertText", { text: query }, sessionId);
+  await waitFor(`query value ${query}`, async () => {
+    const combobox = axRole(await axTree(client, sessionId), "combobox")[0];
+    return combobox?.value?.value === query ? true : undefined;
+  });
 }
 
 async function waitForSelectedOverlayTabId(client, sessionId, label) {
@@ -400,6 +498,85 @@ async function main() {
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
+    // PEEK-13: 30 production-shaped, ambiguity-preserving metadata tabs through the shipped overlay matcher.
+    const fixtureOrigins = {
+      github: "https://github.com", docs: "https://docs.google.com", linear: "https://linear.app",
+      figma: "https://figma.com", notion: "https://notion.so", stackoverflow: "https://stackoverflow.com",
+      mdn: "https://developer.mozilla.org", local: "http://localhost:5173",
+    };
+    const fixtureUrls = searchFixtureFacts.map(([, , host, pathname]) => `${fixtureOrigins[host]}${pathname}`);
+    const interceptedFixturePages = [];
+    for (let index = 0; index < searchFixtureFacts.length; index += 1) {
+      interceptedFixturePages.push(await createInterceptedFixturePage(client, fixtureUrls[index], searchFixtureFacts[index][1]));
+    }
+    const fixtureBrowserState = await browserState();
+    const fixtureTabs = fixtureUrls.map((url) => fixtureBrowserState.windows.flatMap((window) =>
+      window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === url));
+    assert(fixtureTabs.length === 30 && fixtureTabs.every(Boolean), `Expected 30 enumerated search fixture tabs, got ${fixtureTabs.filter(Boolean).length}`);
+    const fixtureIds = Object.fromEntries(searchFixtureFacts.map(([key], index) => [key, fixtureTabs[index].id]));
+    const searchMeasurements = [];
+    const checkSearch = async (queryText, check, label) => {
+      await focusSource();
+      await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+      await waitForOverlay(client, sourceSession);
+      await waitForSelectedOverlayTabId(client, sourceSession, `${label} initial delivered selection`);
+      const queryStartedAt = performance.now();
+      await replaceOverlayQuery(client, sourceSession, queryText);
+      const observed = await waitFor(label, async () => {
+        const ids = await overlayResultTabIds(client, sourceSession);
+        return check(ids) ? ids : undefined;
+      });
+      searchMeasurements.push({ query: queryText, observedMs: Number((performance.now() - queryStartedAt).toFixed(2)), ids: observed.value });
+      return observed.value;
+    };
+
+    const orionRetryIds = await checkSearch("orion retry", (ids) =>
+      ids.slice(0, 2).every((id) => [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]].includes(id)) &&
+      ids.indexOf(fixtureIds["atlas-retry"]) > 1 && ids.indexOf(fixtureIds["orion-home"]) > 1,
+    "orion retry ordering");
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+
+    await checkSearch("orion", (ids) => ids[0] === fixtureIds["orion-home"], "bare orion repository-home preference");
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+
+    await checkSearch("sched rtry", (ids) =>
+      ids.slice(0, 2).every((id) => [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]].includes(id)) &&
+      ids.indexOf(fixtureIds["orion-scheduler"]) > 1 && ids.indexOf(fixtureIds["atlas-retry"]) > 1,
+    "dropped-character ordering");
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+
+    await checkSearch("outage", (ids) => ids.length === 0, "honest outage miss");
+    await replaceOverlayQuery(client, sourceSession, "postmortem");
+    await waitFor("explicit postmortem result", async () => {
+      const ids = await overlayResultTabIds(client, sourceSession);
+      return ids[0] === fixtureIds.postmortem ? ids : undefined;
+    });
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+
+    const authIds = await checkSearch("GITHUB AUTH 880", (ids) => ids[0] === fixtureIds["auth-880"], "case-normalized cross-field PR ordering");
+    await capture(client, sourceSession, "11-search-github-auth-880.png");
+    await press(client, sourceSession, "Enter");
+    await waitForOverlayClosed(client, sourceSession);
+    const searchCommittedState = await browserState();
+    const searchCommittedWindow = searchCommittedState.windows.find((window) => window.id === searchCommittedState.lastFocusedWindowId);
+    assert(searchCommittedWindow?.tabs.some((tab) => tab.active && tab.id === fixtureIds["auth-880"]), "Search result commit did not activate the exact PR 880 tab");
+    await focusSource();
+    await evalWorker(`chrome.tabs.remove(${JSON.stringify(fixtureTabs.map((tab) => tab.id))})`);
+
+    const searchEvidence = {
+      fixtureTabCount: fixtureTabs.length,
+      ambiguity: "30 repeated-site tabs keep exact production-shaped HTTPS URLs; CDP Fetch fulfilled synthetic HTML before network access, and matcher/commit are the shipped extension",
+      orionRetryIds,
+      authIds,
+      exactCommittedTabId: fixtureIds["auth-880"],
+      measurements: searchMeasurements,
+      measurementLimit: "Elapsed times are CDP query-dispatch-to-observed-DOM intervals from one disposable run, not paint timestamps or pass thresholds.",
+    };
+
     await focusSource();
     const beforePendingEscape = await browserState();
     await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
@@ -423,10 +600,16 @@ async function main() {
     await client.send("Target.createTarget", { url: orionUrl, newWindow: true });
     const orionPage = await targetByUrl(client, "page", "/orion-retry.html");
     await targetByUrl(client, "tab", "/orion-retry.html");
+    const orionReadySession = await attach(client, orionPage.targetId);
+    await waitFor("Orion fixture title", async () => {
+      const result = await client.send("Runtime.evaluate", { expression: "document.title", returnByValue: true }, orionReadySession);
+      return result.result.value === "Fix retry in Orion scheduler" ? true : undefined;
+    });
     await focusSource();
     await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targetByUrl(client, "tab", "/source.html")).targetId });
     await waitForOverlay(client, sourceSession);
-    await client.send("Input.insertText", { text: "orion" }, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "Orion control first delivered selection");
+    await replaceOverlayQuery(client, sourceSession, "orion");
     const filtered = await waitFor("Orion filtered result", async () => {
       const nodes = await axTree(client, sourceSession);
       return axText(nodes).includes("Fix retry in Orion scheduler") ? nodes : undefined;
@@ -680,6 +863,7 @@ async function main() {
         samplingLimit: "Sequential Page.captureScreenshot calls are timestamped around each capture. They are not paint timestamps and are not labelled as nominal milliseconds or a true first-frame filmstrip.",
       },
       attention: attentionEvidence,
+      search: searchEvidence,
       centering: {
         before: {
           buildSha: "c9ad0ea152925c1855c3edf1ceceb7bfd4aae6fc",
@@ -704,6 +888,7 @@ async function main() {
         coldWorkerSessionRestore: "pass: service worker target stopped, restarted, and previous exact ID selected",
         pendingCommitEscape: "pass with real Chrome key events while the extension worker was paused; focused input stayed operable and active-tab identities were preserved",
         titleUrlFilter: "pass",
+        imperfectClueSearch: "pass: 30-tab ambiguity fixture covered repository home, cross-field PR number, dropped characters, case, honest miss, explicit postmortem and exact result commit",
         crossWindowExactCommitAndFocus: "pass",
         escapeNoActivation: "pass: focused window and all active-tab identities preserved",
         backdropNoActivation: "pass: focused window and all active-tab identities preserved",

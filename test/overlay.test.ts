@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { normalSearchFixture } from "./fixtures/search-fixtures";
 
 let listener: ((message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
 const sent: unknown[] = [];
@@ -144,6 +145,38 @@ describe("ordinary-page overlay", () => {
     expect(root.textContent).toBe(before);
     expect(input.value).toBe("orion");
     expect(acknowledge).not.toHaveBeenCalled();
+  });
+
+  it("routes imperfect-clue input through ordered rows, reconciles a missing highlight, and commits the exact visible target", async () => {
+    const sessionId = "session-search-path";
+    listener?.({
+      kind: "peek/init", sessionId, sourceTabId: 30, sourceWindowId: 1,
+      model: { status: "ready", tabs: normalSearchFixture },
+    }, {}, () => undefined);
+    const host = document.querySelector<HTMLElement>("#peek-extension-host")!;
+    const root = host.shadowRoot!;
+    const input = root.querySelector<HTMLInputElement>("input")!;
+    const visibleIds = () => Array.from(root.querySelectorAll<HTMLElement>('[role="option"]')).map((row) => Number(row.id.replace("peek-tab-", "")));
+
+    input.value = "sched rtry";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(visibleIds().slice(0, 2)).toEqual([4, 1]);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-1");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).not.toBe("peek-tab-1");
+
+    input.value = "postmortem";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-23");
+
+    input.value = "github auth 880";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(visibleIds()[0]).toBe(11);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-11");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await Promise.resolve();
+    expect(sent).toContainEqual({ kind: "peek/commit", sessionId, targetTabId: 11, targetWindowId: 2 });
   });
 
   it("filters, moves highlight, and commits only on Enter", async () => {
