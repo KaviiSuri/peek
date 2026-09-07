@@ -17,10 +17,16 @@ describe("interaction", () => {
     expect(highlightedTab(state, tabs)?.id).toBe(10);
   });
 
-  it("keeps a valid highlight after filtering and reconciles a removed one", () => {
-    const state = { query: "", highlightedTabId: 20 };
-    expect(setQuery(state, "two", tabs).highlightedTabId).toBe(20);
-    expect(setQuery(state, "one", tabs.slice(0, 1)).highlightedTabId).toBe(10);
-    expect(setQuery(state, "none", []).highlightedTabId).toBeUndefined();
+  it("refreshes the default highlight when the query changes", () => {
+    const ranked = [tabs[0]!, tabs[1]!];
+    const previousPartial = { query: "retry", highlightedTabId: 20 };
+    expect(setQuery(previousPartial, "orion retry", ranked).highlightedTabId).toBe(10);
+    expect(setQuery(previousPartial, "none", []).highlightedTabId).toBeUndefined();
+  });
+
+  it("preserves a valid manual highlight for same-query model reconciliation and replaces a removed one", () => {
+    const manuallyHighlighted = { query: "orion retry", highlightedTabId: 20 };
+    expect(setQuery(manuallyHighlighted, "orion retry", tabs).highlightedTabId).toBe(20);
+    expect(setQuery(manuallyHighlighted, "orion retry", tabs.slice(0, 1)).highlightedTabId).toBe(10);
   });
 });

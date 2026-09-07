@@ -10,10 +10,11 @@ export function initialInteraction(results: readonly PeekTab[]): InteractionStat
 }
 
 export function setQuery(state: InteractionState, query: string, results: readonly PeekTab[]): InteractionState {
+  const queryChanged = query !== state.query;
   const highlightedStillExists = results.some((tab) => tab.id === state.highlightedTabId);
   return {
     query,
-    highlightedTabId: highlightedStillExists ? state.highlightedTabId : results[0]?.id,
+    highlightedTabId: !queryChanged && highlightedStillExists ? state.highlightedTabId : results[0]?.id,
   };
 }
 

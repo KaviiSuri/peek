@@ -514,6 +514,42 @@ async function main() {
       window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === url));
     assert(fixtureTabs.length === 30 && fixtureTabs.every(Boolean), `Expected 30 enumerated search fixture tabs, got ${fixtureTabs.filter(Boolean).length}`);
     const fixtureIds = Object.fromEntries(searchFixtureFacts.map(([key], index) => [key, fixtureTabs[index].id]));
+
+    // Begin from a recently viewed Atlas/retry partial, then type toward stronger Orion/retry evidence one character at a time.
+    const atlasPartial = fixtureTabs[searchFixtureFacts.findIndex(([key]) => key === "atlas-retry")];
+    await evalWorker(`chrome.tabs.update(${atlasPartial.id},{active:true}).then(()=>chrome.windows.update(${atlasPartial.windowId},{focused:true}))`);
+    await waitForAttention("Atlas partial attention before incremental search", (state) => state?.current?.tabId === atlasPartial.id);
+    await focusSource();
+    await waitForAttention("source with Atlas partial as previous", (state) => state?.current?.tabId === sourceChromeTab.id && state?.previous?.tabId === atlasPartial.id);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    const incrementalInitialSelection = await waitForSelectedOverlayTabId(client, sourceSession, "Atlas partial initial selection");
+    assert(incrementalInitialSelection === atlasPartial.id, `Expected previous Atlas partial ${atlasPartial.id}, got ${incrementalInitialSelection}`);
+    const incrementalQuery = "github orion retry";
+    let enteredQuery = "";
+    for (const character of incrementalQuery) {
+      enteredQuery += character;
+      await client.send("Input.insertText", { text: character }, sourceSession);
+      await waitFor(`incremental query ${enteredQuery}`, async () => {
+        const combobox = axRole(await axTree(client, sourceSession), "combobox")[0];
+        return combobox?.value?.value === enteredQuery ? true : undefined;
+      });
+    }
+    const incrementalIds = await waitFor("incremental stronger result ordering and highlight", async () => {
+      const ids = await overlayResultTabIds(client, sourceSession);
+      const selected = await selectedOverlayTabId(client, sourceSession);
+      const strongest = [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]];
+      return strongest.includes(ids[0]) && selected === ids[0] ? ids : undefined;
+    });
+    const incrementalTargetId = incrementalIds.value[0];
+    await capture(client, sourceSession, "12-search-incremental-prior-partial.png");
+    await press(client, sourceSession, "Enter");
+    await waitForOverlayClosed(client, sourceSession);
+    const incrementalCommittedState = await browserState();
+    const incrementalCommittedWindow = incrementalCommittedState.windows.find((window) => window.id === incrementalCommittedState.lastFocusedWindowId);
+    assert(incrementalCommittedWindow?.tabs.some((tab) => tab.active && tab.id === incrementalTargetId), "Incremental search did not commit its strongest highlighted Orion target");
+    await focusSource();
+
     const searchMeasurements = [];
     const checkSearch = async (queryText, check, label) => {
       await focusSource();
@@ -573,6 +609,13 @@ async function main() {
       orionRetryIds,
       authIds,
       exactCommittedTabId: fixtureIds["auth-880"],
+      incrementalPriorPartial: {
+        query: incrementalQuery,
+        initialSelectedTabId: incrementalInitialSelection,
+        initialAtlasPartialTabId: atlasPartial.id,
+        orderedIds: incrementalIds.value,
+        selectedAndCommittedTabId: incrementalTargetId,
+      },
       measurements: searchMeasurements,
       measurementLimit: "Elapsed times are CDP query-dispatch-to-observed-DOM intervals from one disposable run, not paint timestamps or pass thresholds.",
     };
@@ -889,6 +932,7 @@ async function main() {
         pendingCommitEscape: "pass with real Chrome key events while the extension worker was paused; focused input stayed operable and active-tab identities were preserved",
         titleUrlFilter: "pass",
         imperfectClueSearch: "pass: 30-tab ambiguity fixture covered repository home, cross-field PR number, dropped characters, case, honest miss, explicit postmortem and exact result commit",
+        queryChangeHighlightRefresh: "pass: character-by-character input began on a previous Atlas partial, refreshed to the strongest first Orion row and Enter committed that exact tab",
         crossWindowExactCommitAndFocus: "pass",
         escapeNoActivation: "pass: focused window and all active-tab identities preserved",
         backdropNoActivation: "pass: focused window and all active-tab identities preserved",

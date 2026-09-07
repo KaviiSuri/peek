@@ -53,6 +53,22 @@ describe("searchTabs", () => {
     expect(searchTabs(duplicates, "hiring pipeline").map((tab) => tab.id)).toEqual([82, 81, 83]);
   });
 
+  it("uses recency rather than empty-query previous priority for nonempty textual ties", () => {
+    const tiedText: PeekTab[] = [
+      { id: 291, windowId: 1, title: "Deployment notes", url: "https://example.test/deployment", lastAccessed: 1, current: false, previous: true },
+      { id: 292, windowId: 1, title: "Deployment notes", url: "https://example.test/deployment", lastAccessed: 999, current: true, previous: false },
+    ];
+    expect(searchTabs(tiedText, "deployment notes").map((tab) => tab.id)).toEqual([292, 291]);
+  });
+
+  it("ranks exact clue words above newer substring fragments when coverage is equal", () => {
+    const directness: PeekTab[] = [
+      { id: 293, windowId: 1, title: "Audit draft queue", url: "https://work.example/item/293", lastAccessed: 1, current: false },
+      { id: 294, windowId: 1, title: "Auditability queued", url: "https://work.example/item/294", lastAccessed: 999, current: false },
+    ];
+    expect(searchTabs(directness, "audit queue").map((tab) => tab.id)).toEqual([293, 294]);
+  });
+
   it("limits repository-home preference to the supported GitHub hostname", () => {
     const hosts: PeekTab[] = [
       { id: 301, windowId: 1, title: "northstar/lumen", url: "https://github.unrelated/northstar/lumen", lastAccessed: 999, current: false },
