@@ -3,12 +3,13 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 let listener: ((message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
 const sent: unknown[] = [];
+const sendMessage = vi.fn(async (message: unknown) => { sent.push(message); return { ok: true }; });
 
 beforeAll(async () => {
   vi.stubGlobal("chrome", {
     runtime: {
       onMessage: { addListener(callback: typeof listener) { listener = callback; } },
-      sendMessage: vi.fn(async (message: unknown) => { sent.push(message); return { ok: true }; }),
+      sendMessage,
     },
   });
   const nativeAttachShadow = Element.prototype.attachShadow;
@@ -42,13 +43,15 @@ describe("ordinary-page overlay", () => {
     const { root, input } = openOverlay();
     expect(root.querySelector("style")?.textContent).toContain("place-items: center");
     expect(root.querySelector("style")?.textContent).not.toContain("place-items: start center");
+    expect(root.querySelector("style")?.textContent).toContain("height: min(240px, calc(100vh - 48px))");
+    expect(root.querySelector("style")?.textContent).toContain("height: calc(100% - 58px)");
     expect(root.querySelectorAll('[role="option"]')).toHaveLength(2);
     expect(root.textContent).toContain("Orion retry");
     expect(root.textContent).toContain("github.com/acme/orion/pull/2");
     expect(root.activeElement).toBe(input);
   });
 
-  it("accepts a first query character in the stable loading state and preserves it when the model arrives", () => {
+  it("preserves a discriminating loading-state query, caret, focus, filtering and commit when the model arrives", async () => {
     listener?.({
       kind: "peek/init", sessionId: "session-loading", sourceTabId: 1, sourceWindowId: 1,
       model: { status: "loading", tabs: [] },
@@ -58,7 +61,8 @@ describe("ordinary-page overlay", () => {
     const input = root.querySelector<HTMLInputElement>("input")!;
     expect(root.textContent).toContain("Loading open tabs");
 
-    input.value = "o";
+    input.value = "github";
+    input.setSelectionRange(6, 6);
     input.dispatchEvent(new Event("input", { bubbles: true }));
     listener?.({
       kind: "peek/model", sessionId: "session-loading",
@@ -71,22 +75,89 @@ describe("ordinary-page overlay", () => {
       },
     }, {}, () => undefined);
 
-    expect(input.value).toBe("o");
-    expect(root.querySelectorAll('[role="option"]')).toHaveLength(2);
+    expect(input.value).toBe("github");
+    expect(input.selectionStart).toBe(6);
+    expect(root.activeElement).toBe(input);
+    expect(root.querySelectorAll('[role="option"]')).toHaveLength(1);
     expect(root.textContent).toContain("Orion retry");
+    expect(root.textContent).not.toContain("Source");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await Promise.resolve();
+    expect(sent).toContainEqual({ kind: "peek/commit", sessionId: "session-loading", targetTabId: 2, targetWindowId: 2 });
+  });
+
+  it("ignores model updates for another session through the runtime listener", () => {
+    const { root, input } = openOverlay("session-current");
+    input.value = "orion";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const before = root.textContent;
+    const acknowledge = vi.fn();
+
+    listener?.({
+      kind: "peek/model", sessionId: "session-other",
+      model: { status: "error", tabs: [], message: "Wrong session" },
+    }, {}, acknowledge);
+
+    expect(root.textContent).toBe(before);
+    expect(root.textContent).not.toContain("Wrong session");
+    expect(input.value).toBe("orion");
+    expect(acknowledge).toHaveBeenCalledWith({ ok: true });
+  });
+
+  it("rejects a malformed model through the runtime listener without mutation or success acknowledgement", () => {
+    const { root, input } = openOverlay("session-malformed");
+    input.value = "orion";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const before = root.textContent;
+    const acknowledge = vi.fn();
+
+    expect(() => listener?.({
+      kind: "peek/model", sessionId: "session-malformed",
+      model: { status: "ready", tabs: [{ id: "not-a-number" }] },
+    }, {}, acknowledge)).not.toThrow();
+
+    expect(root.textContent).toBe(before);
+    expect(input.value).toBe("orion");
+    expect(acknowledge).not.toHaveBeenCalled();
   });
 
   it("filters, moves highlight, and commits only on Enter", async () => {
+    const before = sent.length;
     const { root, input } = openOverlay("session-2");
     input.value = "orion";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     expect(root.querySelectorAll('[role="option"]')).toHaveLength(1);
-    expect(sent).toEqual([]);
+    expect(sent.slice(before)).toEqual([]);
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(sent).toEqual([]);
+    expect(sent.slice(before)).toEqual([]);
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await Promise.resolve();
     expect(sent).toContainEqual({ kind: "peek/commit", sessionId: "session-2", targetTabId: 2, targetWindowId: 2 });
+  });
+
+  it("keeps Escape operable while a commit response is pending and prevents duplicate commits", async () => {
+    let resolveCommit!: (response: { ok: true }) => void;
+    sendMessage.mockImplementationOnce((message: unknown) => {
+      sent.push(message);
+      return new Promise((resolve) => { resolveCommit = resolve; });
+    });
+    const before = sent.length;
+    const { host, root, input } = openOverlay("session-pending");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(input.readOnly).toBe(true);
+    expect(input.disabled).toBe(false);
+    expect(root.activeElement).toBe(input);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(sent.slice(before)).toHaveLength(1);
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(host.isConnected).toBe(false);
+    expect(sent.slice(before)).toHaveLength(2);
+    expect(sent.at(-1)).toEqual({ kind: "peek/cancel", sessionId: "session-pending" });
+    resolveCommit({ ok: true });
+    await Promise.resolve();
   });
 
   it("tears down on Escape without a commit and restores prior connected focus", async () => {

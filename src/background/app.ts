@@ -91,11 +91,13 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
         return { ok: false, error: "Peek could not verify that tab." };
       }
       if (!target) return { ok: false, error: "That tab is no longer open." };
+      if (sessions.get(message.sessionId) !== session) return { ok: false, error: "Peek session expired." };
 
       try {
         await Effect.runPromise(boundary("dismiss overlay", () =>
           browser.dismissOverlay(session.source.id, message.sessionId),
         ));
+        if (sessions.get(message.sessionId) !== session) return { ok: false, error: "Peek session expired." };
         sessions.delete(message.sessionId);
         if (target.id !== session.source.id) {
           await Effect.runPromise(boundary("activate tab", () => browser.activateTarget(target)));

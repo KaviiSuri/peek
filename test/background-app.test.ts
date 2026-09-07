@@ -52,6 +52,27 @@ describe("production background composition", () => {
     expect(fake.calls).toEqual(["open", "list", "update", "revalidate", "dismiss", "activate"]);
   });
 
+  it("does not deliver a late model after cancellation during deferred enumeration", async () => {
+    let releaseTabs!: (tabs: readonly PeekTab[]) => void;
+    const tabsReady = new Promise<readonly PeekTab[]>((resolve) => { releaseTabs = resolve; });
+    let receiveInit!: (message: InitMessage) => void;
+    const initReady = new Promise<InitMessage>((resolve) => { receiveInit = resolve; });
+    const fake = fakeBrowser({
+      async openOverlay(_source, message) { fake.calls.push("open"); receiveInit(message); },
+      async listEligibleTabs() { fake.calls.push("list"); return tabsReady; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const invocation = app.invoke({ id: 1, windowId: 4 });
+    const init = await initReady;
+
+    app.cancel({ kind: "peek/cancel", sessionId: init.sessionId }, 1);
+    releaseTabs(fixture());
+    await invocation;
+
+    expect(fake.calls).toEqual(["open", "list"]);
+    expect(fake.updated()).toBeUndefined();
+  });
+
   it("cancels without revalidation, dismissal, tab activation or window focus calls", async () => {
     const fake = fakeBrowser();
     const app = createBackgroundApp(fake.adapter);
@@ -75,6 +96,91 @@ describe("production background composition", () => {
     const opened = await app.invoke({ id: 1, windowId: 4 });
     await app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 1, targetWindowId: 4 }, 1);
     expect(fake.calls).toEqual(["open", "list", "update", "revalidate", "dismiss"]);
+  });
+
+  it("does not dismiss or activate after a valid cancellation while target revalidation is pending", async () => {
+    let releaseTarget!: (target: TargetTab) => void;
+    const targetReady = new Promise<TargetTab>((resolve) => { releaseTarget = resolve; });
+    let signalRevalidation!: () => void;
+    const revalidationStarted = new Promise<void>((resolve) => { signalRevalidation = resolve; });
+    const fake = fakeBrowser({
+      async revalidateTarget() { fake.calls.push("revalidate"); signalRevalidation(); return targetReady; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const opened = await app.invoke({ id: 1, windowId: 4 });
+    const commit = app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 1);
+    await revalidationStarted;
+
+    app.cancel({ kind: "peek/cancel", sessionId: opened.sessionId }, 1);
+    releaseTarget({ id: 2, windowId: 9, current: false });
+
+    await expect(commit).resolves.toEqual({ ok: false, error: "Peek session expired." });
+    expect(fake.calls).toEqual(["open", "list", "update", "revalidate"]);
+  });
+
+  it("does not dismiss or activate an in-flight commit after a newer invocation supersedes its session", async () => {
+    let releaseTarget!: (target: TargetTab) => void;
+    const targetReady = new Promise<TargetTab>((resolve) => { releaseTarget = resolve; });
+    let signalRevalidation!: () => void;
+    const revalidationStarted = new Promise<void>((resolve) => { signalRevalidation = resolve; });
+    const fake = fakeBrowser({
+      async revalidateTarget() { fake.calls.push("revalidate"); signalRevalidation(); return targetReady; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const first = await app.invoke({ id: 1, windowId: 4 });
+    const commit = app.commit({ kind: "peek/commit", sessionId: first.sessionId, targetTabId: 2, targetWindowId: 9 }, 1);
+    await revalidationStarted;
+
+    await app.invoke({ id: 1, windowId: 4 });
+    releaseTarget({ id: 2, windowId: 9, current: false });
+
+    await expect(commit).resolves.toEqual({ ok: false, error: "Peek session expired." });
+    expect(fake.calls.filter((call) => call === "dismiss" || call === "activate")).toEqual([]);
+  });
+
+  it("does not activate after a valid cancellation while overlay dismissal is pending", async () => {
+    let releaseDismiss!: () => void;
+    const dismissReady = new Promise<void>((resolve) => { releaseDismiss = resolve; });
+    let signalDismiss!: () => void;
+    const dismissStarted = new Promise<void>((resolve) => { signalDismiss = resolve; });
+    const fake = fakeBrowser({
+      async dismissOverlay() { fake.calls.push("dismiss"); signalDismiss(); return dismissReady; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const opened = await app.invoke({ id: 1, windowId: 4 });
+    const commit = app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 1);
+    await dismissStarted;
+
+    app.cancel({ kind: "peek/cancel", sessionId: opened.sessionId }, 1);
+    releaseDismiss();
+
+    await expect(commit).resolves.toEqual({ ok: false, error: "Peek session expired." });
+    expect(fake.calls).toEqual(["open", "list", "update", "revalidate", "dismiss"]);
+  });
+
+  it("does not activate after a newer invocation supersedes a commit during overlay dismissal", async () => {
+    let releaseDismiss!: () => void;
+    const dismissReady = new Promise<void>((resolve) => { releaseDismiss = resolve; });
+    let signalDismiss!: () => void;
+    const dismissStarted = new Promise<void>((resolve) => { signalDismiss = resolve; });
+    let dismissCount = 0;
+    const fake = fakeBrowser({
+      async dismissOverlay() {
+        fake.calls.push("dismiss");
+        dismissCount += 1;
+        if (dismissCount === 1) { signalDismiss(); await dismissReady; }
+      },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const first = await app.invoke({ id: 1, windowId: 4 });
+    const commit = app.commit({ kind: "peek/commit", sessionId: first.sessionId, targetTabId: 2, targetWindowId: 9 }, 1);
+    await dismissStarted;
+
+    await app.invoke({ id: 1, windowId: 4 });
+    releaseDismiss();
+
+    await expect(commit).resolves.toEqual({ ok: false, error: "Peek session expired." });
+    expect(fake.calls.filter((call) => call === "activate")).toEqual([]);
   });
 
   it("does not let a cancel from another sender discard the source tab's session", async () => {

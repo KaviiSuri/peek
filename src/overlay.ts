@@ -18,7 +18,7 @@ const styles = `
   }
   .palette {
     width: min(680px, calc(100vw - 32px));
-    max-height: min(66vh, 570px);
+    height: min(240px, calc(100vh - 48px));
     overflow: hidden;
     border: 1px solid light-dark(rgba(20, 26, 38, .13), rgba(255, 255, 255, .12));
     border-radius: 14px;
@@ -40,7 +40,7 @@ const styles = `
   }
   input::placeholder { color: light-dark(#858a96, #858994); font-weight: 430; }
   .count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: light-dark(#777d89, #898d98); }
-  .results { margin: 0; padding: 7px; max-height: calc(min(66vh, 570px) - 58px); overflow: auto; list-style: none; }
+  .results { margin: 0; padding: 7px; height: calc(100% - 58px); overflow: auto; list-style: none; }
   .row {
     min-height: 56px; display: flex; align-items: center; gap: 12px;
     padding: 7px 10px; border-radius: 9px; cursor: default;
@@ -64,7 +64,7 @@ const styles = `
   .stack { min-width: 0; flex: 1; display: grid; gap: 2px; }
   .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 19px; font-weight: 610; letter-spacing: -.01em; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/17px ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#707684, #9397a2); }
-  .state { min-height: 118px; display: grid; place-items: center; padding: 26px; text-align: center; color: light-dark(#686e7a, #a4a8b2); font-size: 13px; line-height: 1.45; }
+  .state { min-height: 100%; display: grid; place-items: center; padding: 26px; text-align: center; color: light-dark(#686e7a, #a4a8b2); font-size: 13px; line-height: 1.45; }
   .state strong { display: block; margin-bottom: 5px; color: light-dark(#303642, #e4e5e8); font-size: 14px; }
   @media (prefers-reduced-motion: no-preference) { .palette { animation: peek-in 90ms ease-out; } }
   @keyframes peek-in { from { opacity: 0; transform: translateY(-3px); } }
@@ -227,7 +227,7 @@ function createOverlayController(): OverlayController {
       async function commit(tab: PeekTab | undefined): Promise<void> {
         if (!tab || committing || !activeSessionId) return;
         committing = true;
-        input.disabled = true;
+        input.readOnly = true;
         const response: unknown = await chrome.runtime.sendMessage({
           kind: "peek/commit",
           sessionId: activeSessionId,
@@ -236,7 +236,6 @@ function createOverlayController(): OverlayController {
         }).catch(() => ({ ok: false, error: "Peek could not reach its background worker." }));
         if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && host) {
           committing = false;
-          input.disabled = false;
           model = { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." };
           input.readOnly = true;
           render();

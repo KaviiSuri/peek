@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -166,6 +166,90 @@ async function capture(client, sessionId, name) {
   return path;
 }
 
+async function measureOverlay(client, sessionId) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  const nodes = [];
+  const visit = (node) => {
+    nodes.push(node);
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  const attributes = (node) => Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+  const panelNode = nodes.find((node) => attributes(node).class?.split(/\s+/).includes("palette"));
+  const inputNode = nodes.find((node) => node.nodeName === "INPUT" && attributes(node)["aria-label"] === "Find a tab by title or URL");
+  const selectedNode = nodes.find((node) => attributes(node).role === "option" && attributes(node)["aria-selected"] === "true");
+  assert(panelNode && inputNode, "Could not resolve overlay geometry nodes through the pierced DOM tree");
+  const rect = async (node) => {
+    if (!node) return undefined;
+    const { model } = await client.send("DOM.getBoxModel", { nodeId: node.nodeId }, sessionId);
+    const xs = [model.border[0], model.border[2], model.border[4], model.border[6]];
+    const ys = [model.border[1], model.border[3], model.border[5], model.border[7]];
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    return { x: left, y: top, width: right - left, height: bottom - top, top, right, bottom, left };
+  };
+  const metrics = await client.send("Page.getLayoutMetrics", {}, sessionId);
+  const viewport = { width: metrics.cssVisualViewport.clientWidth, height: metrics.cssVisualViewport.clientHeight };
+  const panel = await rect(panelNode);
+  const accessibility = await axTree(client, sessionId);
+  const combobox = axRole(accessibility, "combobox")[0];
+  const focused = combobox?.properties?.some((property) => property.name === "focused" && property.value?.value === true);
+  return {
+    viewport,
+    panel,
+    input: await rect(inputNode),
+    selected: await rect(selectedNode),
+    panelCenterDelta: {
+      x: panel.left + panel.width / 2 - viewport.width / 2,
+      y: panel.top + panel.height / 2 - viewport.height / 2,
+    },
+    activeElement: focused ? "input" : null,
+  };
+}
+
+function activeTabIdentity(state) {
+  return state.windows
+    .flatMap((window) => window.tabs.filter((tab) => tab.active).map((tab) => ({ windowId: window.id, tabId: tab.id, url: tab.url })))
+    .sort((left, right) => left.windowId - right.windowId);
+}
+
+function sameActiveTabs(left, right) {
+  return JSON.stringify(activeTabIdentity(left)) === JSON.stringify(activeTabIdentity(right));
+}
+
+function assertStableGeometry(measurements, label) {
+  const baseline = measurements.loading.panel;
+  for (const [state, measurement] of Object.entries(measurements)) {
+    assert(Math.abs(measurement.panelCenterDelta.x) <= 0.5 && Math.abs(measurement.panelCenterDelta.y) <= 0.5, `${label} ${state} panel was not centred`);
+    assert(measurement.panel.left >= 0 && measurement.panel.top >= 0 && measurement.panel.right <= measurement.viewport.width && measurement.panel.bottom <= measurement.viewport.height, `${label} ${state} panel exceeded the viewport`);
+    assert(Math.abs(measurement.panel.x - baseline.x) <= 0.5 && Math.abs(measurement.panel.y - baseline.y) <= 0.5 && Math.abs(measurement.panel.width - baseline.width) <= 0.5 && Math.abs(measurement.panel.height - baseline.height) <= 0.5, `${label} panel geometry changed from loading to ${state}`);
+    assert(measurement.input.top >= measurement.panel.top && measurement.input.bottom <= measurement.panel.bottom, `${label} ${state} input was clipped`);
+    if (measurement.selected) assert(measurement.selected.top >= measurement.panel.top && measurement.selected.bottom <= measurement.panel.bottom, `${label} ${state} selected row was clipped`);
+    assert(measurement.activeElement === "input", `${label} ${state} input lost focus`);
+  }
+}
+
+function sendTargetedNativeControlSpace(chrome) {
+  const command = execFileSync("/bin/ps", ["-p", String(chrome.pid), "-o", "command="], { encoding: "utf8" }).trim();
+  assert(command.startsWith(chromePath) && command.includes(`--user-data-dir=${profile}`), "Refusing native input: Chrome PID did not match the disposable executable and profile");
+  const script = `import CoreGraphics
+let pid = pid_t(${chrome.pid})
+guard CGPreflightPostEventAccess() else { fatalError("CoreGraphics post-event access is not already granted") }
+let source = CGEventSource(stateID: .hidSystemState)
+let down = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: true)!
+down.flags = [.maskControl]
+down.postToPid(pid)
+usleep(20000)
+let up = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: false)!
+up.flags = [.maskControl]
+up.postToPid(pid)`;
+  execFileSync("/usr/bin/swift", ["-e", script], { stdio: "pipe" });
+  return { pid: chrome.pid, executable: chromePath, profile, processCommandVerified: true, preflightPostEventAccess: true, facility: "CoreGraphics CGEvent.postToPid(disposableChromePid)" };
+}
+
 async function main() {
   await readFile(resolve(dist, "manifest.json"), "utf8");
   await rm(tempRoot, { recursive: true, force: true });
@@ -211,25 +295,36 @@ async function main() {
     await delay(100);
     await capture(client, sourceSession, "00-before-action.png");
 
-    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    const actionRequestedAt = performance.now();
     const overlayReady = waitForOverlay(client, sourceSession);
-    const firstCharacter = delay(50).then(() => client.send("Input.insertText", { text: "o" }, sourceSession));
-    const frameDelays = [0, 10, 25, 50, 100];
-    let previous = 0;
-    for (const frameDelay of frameDelays) {
-      await delay(Math.max(0, frameDelay - previous));
-      previous = frameDelay;
-      await capture(client, sourceSession, `01-reveal-${String(frameDelay).padStart(3, "0")}ms.png`);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    const actionResponseAt = performance.now();
+    const firstCharacter = delay(50).then(async () => {
+      const requestedAt = performance.now();
+      await client.send("Input.insertText", { text: "o" }, sourceSession);
+      return { requestedSinceActionMs: requestedAt - actionRequestedAt, completedSinceActionMs: performance.now() - actionRequestedAt };
+    });
+    const revealSamples = [];
+    for (let index = 1; index <= 5; index += 1) {
+      const captureStartedAt = performance.now();
+      const name = `01-reveal-sample-${String(index).padStart(2, "0")}.png`;
+      await capture(client, sourceSession, name);
+      revealSamples.push({
+        name,
+        captureStartedSinceActionRequestMs: Number((captureStartedAt - actionRequestedAt).toFixed(2)),
+        captureCompletedSinceActionRequestMs: Number((performance.now() - actionRequestedAt).toFixed(2)),
+      });
+      await delay(10);
     }
     const firstReady = await overlayReady;
-    await firstCharacter;
+    const firstCharacterTiming = await firstCharacter;
     const firstOverlay = await waitFor("first query character", async () => {
       const nodes = await axTree(client, sourceSession);
       const combobox = axRole(nodes, "combobox")[0];
       return combobox?.value?.value === "o" ? { nodes, combobox } : undefined;
     });
     const query = firstOverlay.value.combobox.value.value;
-    const firstInputReadyMs = firstReady.elapsedMs;
+    const overlayObservedSinceActionRequestMs = firstReady.elapsedMs;
 
     const worker = await waitFor("Peek service worker", async () =>
       (await targets(client)).find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)),
@@ -253,6 +348,26 @@ async function main() {
 
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
+
+    await focusSource();
+    const beforePendingEscape = await browserState();
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await client.send("Input.insertText", { text: "source" }, sourceSession);
+    await client.send("Debugger.enable", {}, workerSession);
+    await client.send("Debugger.pause", {}, workerSession);
+    await press(client, sourceSession, "Enter");
+    await delay(50);
+    const pendingCommitNodes = await axTree(client, sourceSession);
+    const pendingCommitInput = axRole(pendingCommitNodes, "combobox")[0];
+    assert(pendingCommitInput?.properties?.some((property) => property.name === "focused" && property.value?.value === true), "Pending commit input lost focus before Escape");
+    await capture(client, sourceSession, "02-pending-commit-before-escape.png");
+    await press(client, sourceSession, "Escape");
+    await waitForOverlayClosed(client, sourceSession);
+    await client.send("Debugger.resume", {}, workerSession);
+    await delay(100);
+    const afterPendingEscape = await browserState();
+    assert(afterPendingEscape.lastFocusedWindowId === beforePendingEscape.lastFocusedWindowId && sameActiveTabs(afterPendingEscape, beforePendingEscape), "Escape during a pending commit changed focus or active tabs");
 
     await client.send("Target.createTarget", { url: orionUrl, newWindow: true });
     const orionPage = await targetByUrl(client, "page", "/orion-retry.html");
@@ -282,6 +397,7 @@ async function main() {
     await waitForOverlayClosed(client, sourceSession);
     const afterEscape = await browserState();
     assert(afterEscape.lastFocusedWindowId === beforeEscape.lastFocusedWindowId, "Escape changed the focused window");
+    assert(sameActiveTabs(afterEscape, beforeEscape), "Escape changed an active tab identity");
 
     await focusSource();
     const beforeBackdrop = await browserState();
@@ -292,6 +408,7 @@ async function main() {
     await waitForOverlayClosed(client, sourceSession);
     const afterBackdrop = await browserState();
     assert(afterBackdrop.lastFocusedWindowId === beforeBackdrop.lastFocusedWindowId, "Backdrop cancellation changed the focused window");
+    assert(sameActiveTabs(afterBackdrop, beforeBackdrop), "Backdrop cancellation changed an active tab identity");
 
     await focusSource();
     await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targetByUrl(client, "tab", "/source.html")).targetId });
@@ -301,6 +418,8 @@ async function main() {
     await waitForOverlayClosed(client, sourceSession);
     const noOpState = await browserState();
     assert(noOpState.lastFocusedWindowId === sourceChromeTab.windowId, "Current-target commit moved focus");
+    const focusedSourceWindow = noOpState.windows.find((window) => window.id === sourceChromeTab.windowId);
+    assert(focusedSourceWindow?.tabs.some((tab) => tab.active && tab.id === sourceChromeTab.id && tab.url === sourceUrl), "Current-target commit changed the exact source active tab");
 
     await client.send("Target.createTarget", { url: atlasUrl, newWindow: true });
     const atlasPage = await targetByUrl(client, "page", "/atlas.html");
@@ -326,56 +445,132 @@ async function main() {
     const siteShortcut = await client.send("Runtime.evaluate", { expression: "document.querySelector('p').textContent", returnByValue: true }, sourceSession);
     assert(siteShortcut.result.value === "Site shortcut received", "Closed-Peek site shortcut did not reach the page");
 
-    await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targetByUrl(client, "tab", "/source.html")).targetId });
-    await waitForOverlay(client, sourceSession);
-    await delay(120);
+    const geometryTabs = [
+      { id: 902, windowId: 92, title: "Fix retry in Orion scheduler", url: orionUrl, lastAccessed: 20, current: false },
+      { id: sourceChromeTab.id, windowId: sourceChromeTab.windowId, title: "Peek source page", url: sourceUrl, lastAccessed: 30, current: true },
+    ];
+    const sendOverlayMessage = (message) => evalWorker(`chrome.tabs.sendMessage(${sourceChromeTab.id}, ${JSON.stringify(message)})`);
+    const probeGeometry = async (label, captureStates = []) => {
+      const sessionId = `geometry-${label}`;
+      await sendOverlayMessage({ kind: "peek/init", sessionId, sourceTabId: sourceChromeTab.id, sourceWindowId: sourceChromeTab.windowId, model: { status: "loading", tabs: [] } });
+      await waitForOverlay(client, sourceSession);
+      await delay(100);
+      const loading = await measureOverlay(client, sourceSession);
+      if (captureStates.includes("loading")) await capture(client, sourceSession, `${label}-loading.png`);
+      await delay(150);
+      await sendOverlayMessage({ kind: "peek/model", sessionId, model: { status: "ready", tabs: geometryTabs } });
+      await delay(100);
+      const ready = await measureOverlay(client, sourceSession);
+      if (captureStates.includes("ready")) await capture(client, sourceSession, `${label}-ready.png`);
+      await sendOverlayMessage({ kind: "peek/model", sessionId, model: { status: "error", tabs: [], message: "Measured error composition." } });
+      await delay(100);
+      const error = await measureOverlay(client, sourceSession);
+      if (captureStates.includes("error")) await capture(client, sourceSession, `${label}-error.png`);
+      const measurements = { loading, ready, error };
+      assertStableGeometry(measurements, label);
+      return measurements;
+    };
+
     await client.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] }, sourceSession);
-    await delay(30);
-    await capture(client, sourceSession, "04-light.png");
+    const normalGeometry = await probeGeometry("04-normal-light", ["loading", "ready", "error"]);
+    await sendOverlayMessage({ kind: "peek/model", sessionId: "geometry-04-normal-light", model: { status: "ready", tabs: geometryTabs } });
     await client.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] }, sourceSession);
-    await delay(30);
-    await capture(client, sourceSession, "05-dark.png");
+    await delay(100);
+    await capture(client, sourceSession, "05-normal-ready-dark.png");
+
     await client.send("Emulation.setDeviceMetricsOverride", { width: 480, height: 720, deviceScaleFactor: 1, mobile: false }, sourceSession);
-    await capture(client, sourceSession, "06-narrow-dark.png");
+    const narrowGeometry = await probeGeometry("06-narrow-dark", ["loading", "ready"]);
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 240, deviceScaleFactor: 1, mobile: false }, sourceSession);
+    const shortGeometry = await probeGeometry("07-short-dark", ["loading", "ready"]);
     await client.send("Emulation.clearDeviceMetricsOverride", {}, sourceSession);
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
-    let physicalKeyboardShortcutInvocation = "unverified: rerun with PEEK_QA_MANUAL_SHORTCUT=1";
-    if (process.env.PEEK_QA_MANUAL_SHORTCUT === "1") {
-      await focusSource();
-      console.log("Manual gate: press physical Control+Space in the focused disposable Chrome window now.");
-      await waitForOverlay(client, sourceSession, 30000);
-      physicalKeyboardShortcutInvocation = "pass: overlay opened after physical Control+Space";
-      await capture(client, sourceSession, "07-physical-shortcut.png");
-      await press(client, sourceSession, "Escape");
+    let physicalKeyboardShortcutInvocation = "unverified: rerun with PEEK_QA_NATIVE_SHORTCUT=1 or PEEK_QA_MANUAL_SHORTCUT=1";
+    let nativeShortcutTarget;
+    if (process.env.PEEK_QA_NATIVE_SHORTCUT === "1" || process.env.PEEK_QA_MANUAL_SHORTCUT === "1") {
+      const nativeSourceUrl = `${sourceUrl}?fresh-native-shortcut=${Date.now()}`;
+      await client.send("Target.createTarget", { url: nativeSourceUrl });
+      const nativePage = await waitFor("fresh native-shortcut page", async () => (await targets(client)).find((target) => target.type === "page" && target.url === nativeSourceUrl));
+      const nativeSession = await attach(client, nativePage.value.targetId);
+      await client.send("Page.enable", {}, nativeSession);
+      await client.send("Accessibility.enable", {}, nativeSession);
+      const absentHost = await client.send("Runtime.evaluate", { expression: "document.querySelector('#peek-extension-host') === null", returnByValue: true }, nativeSession);
+      assert(absentHost.result.value === true, "Fresh native-shortcut tab was already injected before physical invocation");
+      const stateWithNativeTab = await browserState();
+      const nativeChromeTab = stateWithNativeTab.windows.flatMap((window) => window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === nativeSourceUrl);
+      assert(nativeChromeTab, "Fresh native-shortcut Chrome tab was not found");
+      await evalWorker(`chrome.tabs.update(${nativeChromeTab.id},{active:true}).then(()=>chrome.windows.update(${nativeChromeTab.windowId},{focused:true}))`);
+      await client.send("Target.activateTarget", { targetId: nativePage.value.targetId });
+      await client.send("Page.bringToFront", {}, nativeSession);
+      const nativeBefore = await browserState();
+      const nativeFocusedWindow = nativeBefore.windows.find((window) => window.id === nativeBefore.lastFocusedWindowId);
+      assert(nativeFocusedWindow?.id === nativeChromeTab.windowId && nativeFocusedWindow.tabs.some((tab) => tab.active && tab.id === nativeChromeTab.id && tab.url === nativeSourceUrl), "Refusing native input: the fresh disposable synthetic tab was not active in the focused Chrome window");
+
+      if (process.env.PEEK_QA_NATIVE_SHORTCUT === "1") {
+        nativeShortcutTarget = { ...sendTargetedNativeControlSpace(chrome), sourceWindowId: nativeChromeTab.windowId, sourceTabId: nativeChromeTab.id, sourceUrl: nativeSourceUrl, hostAbsentBefore: true, previouslyActionInvoked: false };
+        await waitForOverlay(client, nativeSession, 10000);
+        physicalKeyboardShortcutInvocation = "pass: PID-targeted native Control+Space opened and focused Peek on a fresh, never-action-invoked synthetic tab";
+      } else {
+        console.log("Manual gate: press physical Control+Space in the focused fresh disposable Chrome tab now.");
+        await waitForOverlay(client, nativeSession, 30000);
+        physicalKeyboardShortcutInvocation = "pass: physical Control+Space opened Peek on a fresh, never-action-invoked synthetic tab";
+      }
+      const nativeNodes = await axTree(client, nativeSession);
+      assert(axRole(nativeNodes, "combobox")[0]?.properties?.some((property) => property.name === "focused" && property.value?.value === true), "Physical shortcut did not focus the Peek input on the fresh tab");
+      await capture(client, nativeSession, "08-physical-shortcut-fresh-tab.png");
+      await press(client, nativeSession, "Escape");
     }
 
+    const buildSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    const backgroundBytes = (await stat(resolve(dist, "background.js"))).size;
+    const overlayBytes = (await stat(resolve(dist, "overlay.js"))).size;
     const report = {
       browser: version.Browser,
       product: "Google Chrome",
       profile,
       fixtureOrigin: `http://127.0.0.1:${fixturePort}`,
+      build: { sha: buildSha, backgroundBytes, overlayBytes },
       extension: { id: extensionId, path: loaded.path, enabled: loaded.enabled },
       command: actionCommand,
       invocation: {
         method: "CDP Extensions.triggerAction",
-        firstInputReadyAndObservedMs: Number(firstInputReadyMs.toFixed(2)),
+        actionRequestToCdpResponseMs: Number((actionResponseAt - actionRequestedAt).toFixed(2)),
+        overlayObservedSinceActionRequestMs: Number(overlayObservedSinceActionRequestMs.toFixed(2)),
         firstCharacter: query,
-        note: "CDP page key events do not traverse Chrome's browser-accelerator dispatcher; physical shortcut invocation remains a manual gate.",
+        firstCharacterTiming: {
+          requestedSinceActionMs: Number(firstCharacterTiming.requestedSinceActionMs.toFixed(2)),
+          completedSinceActionMs: Number(firstCharacterTiming.completedSinceActionMs.toFixed(2)),
+        },
+        revealSamples,
+        samplingLimit: "Sequential Page.captureScreenshot calls are timestamped around each capture. They are not paint timestamps and are not labelled as nominal milliseconds or a true first-frame filmstrip.",
       },
+      centering: {
+        before: {
+          buildSha: "c9ad0ea152925c1855c3edf1ceceb7bfd4aae6fc",
+          evidence: "/Users/kavii-suri/.bb/thread-storage/thr_ukj655b33t/peek11-chrome-initial.png",
+          method: "largest connected dark component in the branded-Chrome screenshot (OpenCV grayscale threshold <75)",
+          viewport: { width: 1000, height: 1638 },
+          panel: { x: 16, y: 278, width: 968, height: 260 },
+          panelCenterDelta: { x: 0, y: -411 },
+        },
+        after: { normal: normalGeometry, narrow480x720: narrowGeometry, short900x240: shortGeometry },
+      },
+      nativeShortcutTarget,
       checks: {
         unpackedLoad: "pass",
-        coherentRevealFilmstrip: "captured",
-        firstCharacter: "pass at 50ms after action dispatch",
+        coherentRevealSamples: "captured with actual sequential capture intervals and explicit sampling limits",
+        firstCharacter: "pass; request/completion offsets recorded without claiming paint-time delivery",
+        stableLoadingReadyErrorGeometry: "pass at normal, 480x720 narrow and 900x240 short viewports",
+        pendingCommitEscape: "pass with real Chrome key events while the extension worker was paused; focused input stayed operable and active-tab identities were preserved",
         titleUrlFilter: "pass",
         crossWindowExactCommitAndFocus: "pass",
-        escapeNoActivation: "pass",
-        backdropNoActivation: "pass",
-        currentTargetNoOp: "pass",
+        escapeNoActivation: "pass: focused window and all active-tab identities preserved",
+        backdropNoActivation: "pass: focused window and all active-tab identities preserved",
+        currentTargetNoOp: "pass: exact source window/tab/url remained active",
         staleTargetErrorNoSubstitution: "pass",
         closedPeekSiteShortcut: "pass",
-        lightDarkNarrowScreenshots: "captured",
+        lightDarkNarrowShortScreenshots: "captured",
         physicalKeyboardShortcutInvocation,
       },
     };
