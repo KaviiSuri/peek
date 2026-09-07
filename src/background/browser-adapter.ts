@@ -1,3 +1,4 @@
+import type { AttentionAdapter } from "../attention/attention";
 import type { InitMessage, ModelMessage, PeekModel, PeekTab } from "../shared/model";
 
 export interface SourceTab {
@@ -11,7 +12,7 @@ export interface TargetTab {
   readonly current: boolean;
 }
 
-export interface BrowserAdapter {
+export interface BrowserAdapter extends AttentionAdapter {
   listEligibleTabs(source: SourceTab): Promise<readonly PeekTab[]>;
   openOverlay(source: SourceTab, message: InitMessage): Promise<void>;
   updateOverlay(sourceTabId: number, message: ModelMessage): Promise<void>;

@@ -1,6 +1,6 @@
 # Peek v0 first-release specification
 
-**Status:** ready for implementation planning; production implementation and verification do not yet exist.
+**Status:** implementation in progress; the initial ordinary-page slice is implemented and verified in Chrome, while remaining v0 slices and full release acceptance are pending.
 
 **Product target:** Google Chrome. Dia was Kavii’s discovery test browser and remains separately labelled evidence; this specification does not promise support for Dia or Chromium browsers generally.
 
@@ -186,7 +186,7 @@ Task comments are the canonical decision record. This specification synthesizes 
 
 ### Evidence limits and learned false starts
 
-- No production implementation exists. All extension packages and HTML viewers are throwaway discovery/proving artifacts.
+- Production implementation now exists for the initial ordinary-page slice. The archived discovery extension packages and HTML viewers remain throwaway proving artifacts rather than production foundations.
 - The original action-popup vehicle proved useful for command/focus exploration but failed the ordinary-page centred requirement.
 - The first centred-overlay experiment used a custom command path while icon click used the action path. Dia required per-site icon priming in that build. The v2 `_execute_action` parity build worked keyboard-first on fresh ordinary Dia sites with unchanged permissions. This supports the route decision; it does not prove the exact original Dia cause or Google Chrome behavior.
 - Kavii identified a brief empty-box-then-results flash. Prototype code appended the shell before awaiting the model, and retained timing showed an approximately 11–15 ms host-to-model-response gap. That ordering can permit the observed flash, but no filmstrip captured the exact painted frame. Do not attribute it to Effect or a worker restart. Production must satisfy coherent-reveal acceptance instead of preserving the prototype sequence.

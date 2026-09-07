@@ -4,6 +4,9 @@ import { CancelMessageSchema, CommitMessageSchema, decodeUnknown } from "../shar
 export interface BackgroundEvents {
   readonly onActionClicked: Pick<chrome.events.Event<(tab: chrome.tabs.Tab) => void>, "addListener">;
   readonly onMessage: Pick<typeof chrome.runtime.onMessage, "addListener">;
+  readonly onTabActivated: Pick<typeof chrome.tabs.onActivated, "addListener">;
+  readonly onTabRemoved: Pick<typeof chrome.tabs.onRemoved, "addListener">;
+  readonly onWindowFocusChanged: Pick<typeof chrome.windows.onFocusChanged, "addListener">;
 }
 
 export function registerBackground(events: BackgroundEvents, app: BackgroundApp): void {
@@ -12,6 +15,18 @@ export function registerBackground(events: BackgroundEvents, app: BackgroundApp)
     void app.invoke({ id: tab.id, windowId: tab.windowId }).catch((error: unknown) => {
       console.error("Peek invocation failed", error);
     });
+  });
+
+  events.onTabActivated.addListener(({ tabId, windowId }) => {
+    app.observeTabActivation(tabId, windowId);
+  });
+
+  events.onWindowFocusChanged.addListener((windowId) => {
+    app.observeWindowFocus(windowId);
+  });
+
+  events.onTabRemoved.addListener((tabId) => {
+    app.removeTabFromAttention(tabId);
   });
 
   events.onMessage.addListener((unknownMessage, sender, sendResponse) => {

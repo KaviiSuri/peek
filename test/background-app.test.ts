@@ -16,7 +16,13 @@ function fakeBrowser(overrides: Partial<BrowserAdapter> = {}) {
   const calls: string[] = [];
   let delivered: InitMessage | undefined;
   let updated: ModelMessage | undefined;
+  let storedAttention: unknown;
   const adapter: BrowserAdapter = {
+    async loadAttentionState() { return storedAttention; },
+    async saveAttentionState(state) { storedAttention = state; },
+    async resolveFocusedAttention(windowId, tabId) {
+      return windowId !== undefined && tabId !== undefined ? { windowId, tabId } : undefined;
+    },
     async listEligibleTabs(_source: SourceTab) { calls.push("list"); return fixture(); },
     async openOverlay(_source: SourceTab, message: InitMessage) { calls.push("open"); delivered = message; },
     async updateOverlay(_sourceTabId: number, message: ModelMessage) { calls.push("update"); updated = message; },

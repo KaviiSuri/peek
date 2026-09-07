@@ -27,3 +27,5 @@ Chrome's official extension documentation confirms the browser contracts used he
 - [`chrome.windows`](https://developer.chrome.com/docs/extensions/reference/api/windows) documents window enumeration and `windows.update(..., { focused: true })`.
 
 No React, WXT, persistent content script, host permission or remote asset is included.
+
+PEEK-12 adds Chrome's `storage` permission solely for a schema-validated `chrome.storage.session` record containing current/previous numeric tab and window IDs. Session scope survives MV3 worker suspension without persisting browsing metadata across browser sessions; titles, URLs and content are never stored for attention history.

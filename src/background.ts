@@ -8,4 +8,8 @@ const app = createBackgroundApp(chromeBrowserAdapter);
 registerBackground({
   onActionClicked: chrome.action.onClicked,
   onMessage: chrome.runtime.onMessage,
+  onTabActivated: chrome.tabs.onActivated,
+  onTabRemoved: chrome.tabs.onRemoved,
+  onWindowFocusChanged: chrome.windows.onFocusChanged,
 }, app);
+app.start();

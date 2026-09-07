@@ -87,6 +87,30 @@ describe("ordinary-page overlay", () => {
     expect(sent).toContainEqual({ kind: "peek/commit", sessionId: "session-loading", targetTabId: 2, targetWindowId: 2 });
   });
 
+  it("selects the known previous tab when a loading model becomes ready", () => {
+    listener?.({
+      kind: "peek/init", sessionId: "session-previous", sourceTabId: 2, sourceWindowId: 20,
+      model: { status: "loading", tabs: [] },
+    }, {}, () => undefined);
+    const host = document.querySelector<HTMLElement>("#peek-extension-host")!;
+    const root = host.shadowRoot!;
+    listener?.({
+      kind: "peek/model", sessionId: "session-previous",
+      model: {
+        status: "ready",
+        tabs: [
+          { id: 2, windowId: 20, title: "Current B", url: "https://b.test", lastAccessed: 300, current: true, previous: false },
+          { id: 3, windowId: 20, title: "Recent C", url: "https://c.test", lastAccessed: 400, current: false, previous: false },
+          { id: 1, windowId: 10, title: "Previous A", url: "https://a.test", lastAccessed: 100, current: false, previous: true },
+        ],
+      },
+    }, {}, () => undefined);
+
+    const selected = root.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+    expect(selected?.textContent).toContain("Previous A");
+    expect(root.querySelector("input")?.getAttribute("aria-activedescendant")).toBe("peek-tab-1");
+  });
+
   it("ignores model updates for another session through the runtime listener", () => {
     const { root, input } = openOverlay("session-current");
     input.value = "orion";

@@ -8,14 +8,18 @@ const updateTab = vi.fn();
 const updateWindow = vi.fn();
 const executeScript = vi.fn();
 const sendMessage = vi.fn();
+const getStorage = vi.fn();
+const setStorage = vi.fn();
+const getLastFocused = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("chrome", {
     runtime: { id: "peek-extension" },
-    windows: { getAll, get: getWindow, update: updateWindow },
+    windows: { getAll, get: getWindow, getLastFocused, update: updateWindow },
     tabs: { get: getTab, update: updateTab, sendMessage },
     scripting: { executeScript },
+    storage: { session: { get: getStorage, set: setStorage } },
   });
 });
 
@@ -37,6 +41,39 @@ describe("Chrome browser adapter", () => {
     const tabs = await chromeBrowserAdapter.listEligibleTabs({ id: 10, windowId: 1 });
     expect(getAll).toHaveBeenCalledWith({ populate: true, windowTypes: ["normal"] });
     expect(tabs).toEqual([{ id: 10, windowId: 1, title: "Source", url: "https://source.test", lastAccessed: 4, current: true }]);
+  });
+
+  it("persists only the validated attention payload in extension session storage", async () => {
+    getStorage.mockResolvedValue({ peekAttentionV1: { version: 1, current: { tabId: 10, windowId: 1 } } });
+    await expect(chromeBrowserAdapter.loadAttentionState()).resolves.toEqual({ version: 1, current: { tabId: 10, windowId: 1 } });
+    const state = { version: 1 as const, current: { tabId: 10, windowId: 1 } };
+    await chromeBrowserAdapter.saveAttentionState(state);
+    expect(setStorage).toHaveBeenCalledWith({ peekAttentionV1: state });
+  });
+
+  it("observes only an active tab in the actually focused eligible window", async () => {
+    getWindow.mockResolvedValue({
+      id: 1, type: "normal", incognito: false, focused: true,
+      tabs: [{ id: 10, windowId: 1, active: true, incognito: false, url: "https://source.test" }],
+    });
+    getTab.mockResolvedValue({ id: 10, windowId: 1, active: true, incognito: false, url: "https://source.test" });
+    await expect(chromeBrowserAdapter.resolveFocusedAttention(1, 10)).resolves.toEqual({ tabId: 10, windowId: 1 });
+
+    getWindow.mockResolvedValue({ id: 1, type: "normal", incognito: false, focused: false, tabs: [] });
+    await expect(chromeBrowserAdapter.resolveFocusedAttention(1, 10)).resolves.toBeUndefined();
+
+    getWindow.mockResolvedValue({ id: 1, type: "normal", incognito: false, focused: true, tabs: [] });
+    getTab.mockResolvedValue({ id: 11, windowId: 1, active: true, incognito: false, url: "chrome-extension://peek-extension/fallback.html" });
+    await expect(chromeBrowserAdapter.resolveFocusedAttention(1, 11)).resolves.toBeUndefined();
+  });
+
+  it("resolves the visible active tab when a normal window gains focus", async () => {
+    getWindow.mockResolvedValue({
+      id: 7, type: "normal", incognito: false, focused: true,
+      tabs: [{ id: 21, windowId: 7, active: true, incognito: false, url: "https://target.test" }],
+    });
+    await expect(chromeBrowserAdapter.resolveFocusedAttention(7)).resolves.toEqual({ tabId: 21, windowId: 7 });
+    expect(getWindow).toHaveBeenCalledWith(7, { populate: true });
   });
 
   it("injects only the active top-level tab before delivering its complete model", async () => {
