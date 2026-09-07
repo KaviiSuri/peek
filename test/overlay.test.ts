@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { normalSearchFixture } from "./fixtures/search-fixtures";
 
 let listener: ((message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
 const sent: unknown[] = [];
@@ -144,6 +145,87 @@ describe("ordinary-page overlay", () => {
     expect(root.textContent).toBe(before);
     expect(input.value).toBe("orion");
     expect(acknowledge).not.toHaveBeenCalled();
+  });
+
+  it("routes imperfect-clue input through ordered rows, reconciles a missing highlight, and commits the exact visible target", async () => {
+    const sessionId = "session-search-path";
+    listener?.({
+      kind: "peek/init", sessionId, sourceTabId: 30, sourceWindowId: 1,
+      model: { status: "ready", tabs: normalSearchFixture },
+    }, {}, () => undefined);
+    const host = document.querySelector<HTMLElement>("#peek-extension-host")!;
+    const root = host.shadowRoot!;
+    const input = root.querySelector<HTMLInputElement>("input")!;
+    const visibleIds = () => Array.from(root.querySelectorAll<HTMLElement>('[role="option"]')).map((row) => Number(row.id.replace("peek-tab-", "")));
+
+    input.value = "sched rtry";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(visibleIds().slice(0, 2)).toEqual([4, 1]);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-4");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-1");
+
+    input.value = "postmortem";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-23");
+
+    input.value = "github auth 880";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(visibleIds()[0]).toBe(11);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-11");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await Promise.resolve();
+    expect(sent).toContainEqual({ kind: "peek/commit", sessionId, targetTabId: 11, targetWindowId: 2 });
+  });
+
+  it("refreshes a misleading partial highlight for pasted and character-by-character stronger queries before Enter", async () => {
+    const rankedTabs = [
+      { id: 401, windowId: 1, title: "Orion retry fix", url: "https://github.com/acme/orion/pull/41", lastAccessed: 1, current: false },
+      { id: 402, windowId: 1, title: "Atlas retry notes", url: "https://github.com/acme/atlas/pull/42", lastAccessed: 20, current: false, previous: true },
+      { id: 499, windowId: 1, title: "Current notes", url: "https://fixture.test/source", lastAccessed: 99, current: true },
+    ];
+
+    for (const [query, incremental] of [["orion retry", false], ["github orion retry", true]] as const) {
+      const sessionId = `query-refresh-${incremental ? "incremental" : "paste"}`;
+      listener?.({ kind: "peek/init", sessionId, sourceTabId: 499, sourceWindowId: 1, model: { status: "ready", tabs: rankedTabs } }, {}, () => undefined);
+      const root = document.querySelector<HTMLElement>("#peek-extension-host")!.shadowRoot!;
+      const input = root.querySelector<HTMLInputElement>("input")!;
+      expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-402");
+
+      const values = incremental ? Array.from({ length: query.length }, (_, index) => query.slice(0, index + 1)) : [query];
+      for (const value of values) {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+
+      const orderedIds = Array.from(root.querySelectorAll<HTMLElement>('[role="option"]')).map((row) => row.id);
+      expect(orderedIds[0]).toBe("peek-tab-401");
+      expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-401");
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+      expect(sent).toContainEqual({ kind: "peek/commit", sessionId, targetTabId: 401, targetWindowId: 1 });
+    }
+  });
+
+  it("preserves a manual highlight on same-query model delivery and reconciles it when removed", () => {
+    const sessionId = "same-query-reconciliation";
+    const rankedTabs = [
+      { id: 401, windowId: 1, title: "Orion retry fix", url: "https://github.com/acme/orion/pull/41", lastAccessed: 30, current: false },
+      { id: 402, windowId: 1, title: "Orion retry notes", url: "https://github.com/acme/orion/pull/42", lastAccessed: 20, current: false },
+    ];
+    listener?.({ kind: "peek/init", sessionId, sourceTabId: 499, sourceWindowId: 1, model: { status: "ready", tabs: rankedTabs } }, {}, () => undefined);
+    const root = document.querySelector<HTMLElement>("#peek-extension-host")!.shadowRoot!;
+    const input = root.querySelector<HTMLInputElement>("input")!;
+    input.value = "orion retry";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-402");
+
+    listener?.({ kind: "peek/model", sessionId, model: { status: "ready", tabs: rankedTabs } }, {}, () => undefined);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-402");
+    listener?.({ kind: "peek/model", sessionId, model: { status: "ready", tabs: rankedTabs.slice(0, 1) } }, {}, () => undefined);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-401");
   });
 
   it("filters, moves highlight, and commits only on Enter", async () => {
