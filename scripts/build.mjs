@@ -1,0 +1,35 @@
+import { cp, mkdir, rm, stat } from "node:fs/promises";
+import { build } from "esbuild";
+
+await rm("dist", { recursive: true, force: true });
+await mkdir("dist", { recursive: true });
+
+await Promise.all([
+  build({
+    entryPoints: ["src/background.ts"],
+    outfile: "dist/background.js",
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "chrome120",
+    minify: true,
+    sourcemap: false,
+  }),
+  build({
+    entryPoints: ["src/overlay.ts"],
+    outfile: "dist/overlay.js",
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "chrome120",
+    minify: true,
+    sourcemap: false,
+  }),
+]);
+await cp("manifest.json", "dist/manifest.json");
+
+const sizes = await Promise.all(["background.js", "overlay.js"].map(async (file) => ({
+  file,
+  bytes: (await stat(`dist/${file}`)).size,
+})));
+for (const { file, bytes } of sizes) console.log(`${file}: ${bytes} bytes`);

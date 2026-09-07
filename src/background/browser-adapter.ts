@@ -1,0 +1,25 @@
+import type { InitMessage, PeekModel, PeekTab } from "../shared/model";
+
+export interface SourceTab {
+  readonly id: number;
+  readonly windowId: number;
+}
+
+export interface TargetTab {
+  readonly id: number;
+  readonly windowId: number;
+  readonly current: boolean;
+}
+
+export interface BrowserAdapter {
+  listEligibleTabs(source: SourceTab): Promise<readonly PeekTab[]>;
+  openOverlay(source: SourceTab, message: InitMessage): Promise<void>;
+  dismissOverlay(sourceTabId: number, sessionId: string): Promise<void>;
+  revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined>;
+  activateTarget(target: TargetTab): Promise<void>;
+}
+
+export interface InvocationResult {
+  readonly sessionId: string;
+  readonly model: PeekModel;
+}

@@ -1,0 +1,300 @@
+import { Schema } from "effect";
+import { highlightedTab, initialInteraction, moveHighlight, setQuery, type InteractionState } from "./interaction/interaction";
+import { meaningfulLocation, searchTabs } from "./search/search";
+import { decodeUnknown, InitMessageSchema, type InitMessage, type PeekTab } from "./shared/model";
+
+const DismissMessageSchema = Schema.Struct({
+  kind: Schema.Literal("peek/dismiss"),
+  sessionId: Schema.String,
+});
+
+const CONTROLLER_KEY = "__peekOverlayControllerV1";
+
+const styles = `
+  :host { all: initial; color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  .backdrop {
+    position: fixed; inset: 0; z-index: 2147483647;
+    display: grid; place-items: start center;
+    padding: min(17vh, 150px) 16px 24px;
+    background: color-mix(in srgb, #080a0f 18%, transparent);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .palette {
+    width: min(680px, calc(100vw - 32px));
+    max-height: min(66vh, 570px);
+    overflow: hidden;
+    border: 1px solid light-dark(rgba(20, 26, 38, .13), rgba(255, 255, 255, .12));
+    border-radius: 14px;
+    background: light-dark(rgba(250, 251, 253, .96), rgba(24, 25, 31, .96));
+    color: light-dark(#151821, #f4f4f6);
+    box-shadow: 0 26px 80px rgba(6, 9, 18, .28), 0 2px 8px rgba(6, 9, 18, .12);
+    backdrop-filter: blur(22px) saturate(1.2);
+  }
+  .search {
+    display: flex; align-items: center; gap: 11px;
+    min-height: 58px; padding: 0 18px;
+    border-bottom: 1px solid light-dark(rgba(20, 26, 38, .09), rgba(255, 255, 255, .08));
+  }
+  .search svg { width: 18px; height: 18px; flex: none; color: light-dark(#6e7380, #9296a2); }
+  input {
+    all: unset; min-width: 0; flex: 1;
+    font: 500 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: inherit; caret-color: light-dark(#365be7, #92a5ff);
+  }
+  input::placeholder { color: light-dark(#858a96, #858994); font-weight: 430; }
+  .count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: light-dark(#777d89, #898d98); }
+  .results { margin: 0; padding: 7px; max-height: calc(min(66vh, 570px) - 58px); overflow: auto; list-style: none; }
+  .row {
+    min-height: 56px; display: flex; align-items: center; gap: 12px;
+    padding: 7px 10px; border-radius: 9px; cursor: default;
+    outline: none; position: relative;
+  }
+  .row[aria-selected="true"] {
+    background: light-dark(#e5eaff, #343a54);
+    box-shadow: inset 0 0 0 1px light-dark(#c7d0fa, #596688);
+  }
+  .row[aria-selected="true"]::before {
+    content: ""; position: absolute; left: 2px; top: 13px; bottom: 13px;
+    width: 3px; border-radius: 3px; background: light-dark(#4264dd, #9aabff);
+  }
+  .favicon {
+    width: 22px; height: 22px; flex: none; border-radius: 6px;
+    display: grid; place-items: center; overflow: hidden;
+    background: light-dark(#e2e5eb, #3b3d46); color: light-dark(#737986, #a9adb7);
+    font-size: 10px; font-weight: 700;
+  }
+  .favicon img { width: 18px; height: 18px; object-fit: contain; }
+  .stack { min-width: 0; flex: 1; display: grid; gap: 2px; }
+  .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 19px; font-weight: 610; letter-spacing: -.01em; }
+  .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/17px ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#707684, #9397a2); }
+  .state { min-height: 118px; display: grid; place-items: center; padding: 26px; text-align: center; color: light-dark(#686e7a, #a4a8b2); font-size: 13px; line-height: 1.45; }
+  .state strong { display: block; margin-bottom: 5px; color: light-dark(#303642, #e4e5e8); font-size: 14px; }
+  @media (prefers-reduced-motion: no-preference) { .palette { animation: peek-in 90ms ease-out; } }
+  @keyframes peek-in { from { opacity: 0; transform: translateY(-3px); } }
+  @media (max-width: 520px) { .backdrop { padding-inline: 8px; } .palette { width: calc(100vw - 16px); } }
+`;
+
+interface OverlayController {
+  init(message: InitMessage): void;
+  dismiss(sessionId: string): void;
+}
+
+function createOverlayController(): OverlayController {
+  let activeSessionId: string | undefined;
+  let host: HTMLElement | undefined;
+  let priorFocus: HTMLElement | null = null;
+  const closedSessions = new Set<string>();
+
+  function teardown(restoreFocus: boolean): void {
+    host?.remove();
+    host = undefined;
+    activeSessionId = undefined;
+    if (restoreFocus && document.hasFocus() && priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
+    priorFocus = null;
+  }
+
+  function cancel(): void {
+    const sessionId = activeSessionId;
+    if (!sessionId) return;
+    closedSessions.add(sessionId);
+    teardown(true);
+    void chrome.runtime.sendMessage({ kind: "peek/cancel", sessionId }).catch(() => undefined);
+  }
+
+  return {
+    init(message) {
+      if (closedSessions.has(message.sessionId)) return;
+      if (host) teardown(false);
+      activeSessionId = message.sessionId;
+      priorFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+      const nextHost = document.createElement("div");
+      nextHost.id = "peek-extension-host";
+      const shadow = nextHost.attachShadow({ mode: "closed" });
+      const style = document.createElement("style");
+      style.textContent = styles;
+      const backdrop = document.createElement("div");
+      backdrop.className = "backdrop";
+      const palette = document.createElement("section");
+      palette.className = "palette";
+      palette.setAttribute("role", "dialog");
+      palette.setAttribute("aria-label", "Find an open tab");
+
+      const search = document.createElement("div");
+      search.className = "search";
+      search.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>';
+      const input = document.createElement("input");
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = message.model.status === "error" ? "Tabs unavailable" : "Find a tab by title or URL";
+      input.setAttribute("aria-label", "Find a tab by title or URL");
+      input.setAttribute("role", "combobox");
+      input.setAttribute("aria-expanded", "true");
+      input.setAttribute("aria-controls", "peek-results");
+      if (message.model.status === "error") input.readOnly = true;
+      const count = document.createElement("span");
+      count.className = "count";
+      search.append(input, count);
+
+      const list = document.createElement("ul");
+      list.className = "results";
+      list.id = "peek-results";
+      list.setAttribute("role", "listbox");
+      palette.append(search, list);
+      backdrop.append(palette);
+      shadow.append(style, backdrop);
+
+      let results = searchTabs(message.model.tabs, "");
+      let state: InteractionState = initialInteraction(results);
+      let committing = false;
+
+      function stateItem(titleText: string, detailText: string): HTMLLIElement {
+        const item = document.createElement("li");
+        item.className = "state";
+        const content = document.createElement("span");
+        const title = document.createElement("strong");
+        title.textContent = titleText;
+        content.append(title, detailText);
+        item.append(content);
+        return item;
+      }
+
+      function render(): void {
+        list.replaceChildren();
+        count.textContent = message.model.status === "ready" ? `${results.length} ${results.length === 1 ? "tab" : "tabs"}` : "";
+        if (message.model.status === "error") {
+          list.append(stateItem("Could not load tabs", message.model.message ?? "Close Peek and try again."));
+          return;
+        }
+        if (results.length === 0) {
+          list.append(state.query
+            ? stateItem("No matching tabs", "Try a title, site, or URL fragment.")
+            : stateItem("No tabs to show", "Press Escape to close Peek."));
+          input.removeAttribute("aria-activedescendant");
+          return;
+        }
+
+        for (const tab of results) {
+          const item = document.createElement("li");
+          item.className = "row";
+          item.id = `peek-tab-${tab.id}`;
+          item.setAttribute("role", "option");
+          const selected = tab.id === state.highlightedTabId;
+          item.setAttribute("aria-selected", String(selected));
+          if (selected) input.setAttribute("aria-activedescendant", item.id);
+
+          const favicon = document.createElement("span");
+          favicon.className = "favicon";
+          favicon.textContent = tab.title.slice(0, 1).toLocaleUpperCase() || "•";
+          if (tab.favIconUrl) {
+            const image = document.createElement("img");
+            image.src = tab.favIconUrl;
+            image.alt = "";
+            image.addEventListener("load", () => { favicon.textContent = ""; favicon.append(image); }, { once: true });
+          }
+          const stack = document.createElement("span");
+          stack.className = "stack";
+          const title = document.createElement("span");
+          title.className = "title";
+          title.textContent = tab.title;
+          const path = document.createElement("span");
+          path.className = "path";
+          path.textContent = meaningfulLocation(tab.url);
+          stack.append(title, path);
+          item.append(favicon, stack);
+          item.addEventListener("pointermove", () => {
+            if (state.highlightedTabId !== tab.id) {
+              state = { ...state, highlightedTabId: tab.id };
+              render();
+            }
+          });
+          item.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            void commit(tab);
+          });
+          list.append(item);
+        }
+        const selectedRow = list.querySelector<HTMLElement>('[aria-selected="true"]');
+        if (typeof selectedRow?.scrollIntoView === "function") selectedRow.scrollIntoView({ block: "nearest" });
+      }
+
+      async function commit(tab: PeekTab | undefined): Promise<void> {
+        if (!tab || committing || !activeSessionId) return;
+        committing = true;
+        input.disabled = true;
+        const response: unknown = await chrome.runtime.sendMessage({
+          kind: "peek/commit",
+          sessionId: activeSessionId,
+          targetTabId: tab.id,
+          targetWindowId: tab.windowId,
+        }).catch(() => ({ ok: false, error: "Peek could not reach its background worker." }));
+        if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && host) {
+          committing = false;
+          input.disabled = false;
+          message = { ...message, model: { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." } };
+          input.readOnly = true;
+          render();
+          input.focus({ preventScroll: true });
+        }
+      }
+
+      input.addEventListener("input", () => {
+        results = searchTabs(message.model.tabs, input.value);
+        state = setQuery(state, input.value, results);
+        render();
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          cancel();
+        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          state = moveHighlight(state, results, event.key === "ArrowDown" ? 1 : -1);
+          render();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          void commit(highlightedTab(state, results));
+        }
+      });
+      backdrop.addEventListener("pointerdown", (event) => {
+        if (event.target === backdrop) cancel();
+      });
+
+      render();
+      host = nextHost;
+      document.documentElement.append(nextHost);
+      input.focus({ preventScroll: true });
+    },
+
+    dismiss(sessionId) {
+      if (activeSessionId !== sessionId) return;
+      closedSessions.add(sessionId);
+      teardown(false);
+    },
+  };
+}
+
+const globalWindow = window as Window & { [CONTROLLER_KEY]?: OverlayController };
+if (!globalWindow[CONTROLLER_KEY]) {
+  const controller = createOverlayController();
+  globalWindow[CONTROLLER_KEY] = controller;
+  chrome.runtime.onMessage.addListener((unknownMessage, _sender, sendResponse) => {
+    const init = decodeUnknown(InitMessageSchema, unknownMessage);
+    if (init) {
+      controller.init(init);
+      sendResponse({ ok: true });
+      return false;
+    }
+    const dismiss = decodeUnknown(DismissMessageSchema, unknownMessage);
+    if (dismiss) {
+      controller.dismiss(dismiss.sessionId);
+      sendResponse({ ok: true });
+    }
+    return false;
+  });
+}
