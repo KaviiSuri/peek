@@ -187,10 +187,10 @@ function createOverlayController(): OverlayController {
       function visibleRows(): HTMLElement[] {
         const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="option"]'));
         const listBounds = list.getBoundingClientRect();
-        if (listBounds.height === 0) return rows.slice(0, 9);
+        if (listBounds.height <= 0) return [];
         return rows.filter((row) => {
           const bounds = row.getBoundingClientRect();
-          return bounds.bottom > listBounds.top && bounds.top < listBounds.bottom;
+          return bounds.height > 0 && bounds.top >= listBounds.top && bounds.bottom <= listBounds.bottom;
         }).slice(0, 9);
       }
 
@@ -303,7 +303,8 @@ function createOverlayController(): OverlayController {
         if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && host) {
           committing = false;
           model = { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." };
-          input.readOnly = true;
+          results = [];
+          state = setQuery(state, state.query, results);
           render();
           input.focus({ preventScroll: true });
         }
@@ -325,8 +326,9 @@ function createOverlayController(): OverlayController {
           cancel();
           return;
         }
+        const modified = event.altKey || event.ctrlKey || event.metaKey;
         if (event.key === "Tab") {
-          if (event.shiftKey) return;
+          if (event.shiftKey || modified) return;
           event.preventDefault();
           event.stopPropagation();
           if (state.mode === "typing") {
@@ -344,6 +346,7 @@ function createOverlayController(): OverlayController {
           }
           return;
         }
+        if (model.status !== "ready" || modified) return;
         const navigationKey = event.key === "ArrowDown" || event.key === "ArrowUp" ||
           (state.mode === "selection" && (event.key.toLocaleLowerCase() === "j" || event.key.toLocaleLowerCase() === "k"));
         if (navigationKey) {

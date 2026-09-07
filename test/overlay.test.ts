@@ -273,6 +273,14 @@ describe("ordinary-page overlay", () => {
   it("routes j/k, arrows and visible numeric choices through real DOM events without activating on highlight", async () => {
     const before = sent.length;
     const { root, input } = openOverlay("session-selection-keys");
+    const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("results")) return { top: 0, bottom: 120, height: 120 } as DOMRect;
+      if (this.getAttribute("role") === "option") {
+        const index = this.id === "peek-tab-2" ? 0 : 1;
+        return { top: index * 56, bottom: (index + 1) * 56, height: 56 } as DOMRect;
+      }
+      return { top: 0, bottom: 0, height: 0 } as DOMRect;
+    });
     keydown(input, "Tab");
     expect(root.querySelectorAll(".digit")).toHaveLength(2);
 
@@ -287,6 +295,7 @@ describe("ordinary-page overlay", () => {
     keydown(input, "2");
     await Promise.resolve();
     expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-selection-keys", targetTabId: 1, targetWindowId: 1 }]);
+    geometry.mockRestore();
   });
 
   it("commits the row reached by Tab, j and Enter through the production event route", async () => {
@@ -306,9 +315,13 @@ describe("ordinary-page overlay", () => {
     keydown(input, "Tab");
     const list = root.querySelector<HTMLElement>(".results")!;
     const rows = Array.from(root.querySelectorAll<HTMLElement>('[role="option"]'));
+    expect(root.querySelectorAll(".digit")).toHaveLength(0);
+    keydown(input, "1");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([]);
     vi.spyOn(list, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 56, height: 56 } as DOMRect);
-    vi.spyOn(rows[0]!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 56 } as DOMRect);
-    vi.spyOn(rows[1]!, "getBoundingClientRect").mockReturnValue({ top: 56, bottom: 112 } as DOMRect);
+    vi.spyOn(rows[0]!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 56, height: 56 } as DOMRect);
+    vi.spyOn(rows[1]!, "getBoundingClientRect").mockReturnValue({ top: 56, bottom: 112, height: 56 } as DOMRect);
     list.dispatchEvent(new Event("scroll"));
     expect(rows[0]?.querySelector(".digit")?.textContent).toBe("1");
     expect(rows[1]?.querySelector(".digit")).toBeNull();
@@ -317,14 +330,29 @@ describe("ordinary-page overlay", () => {
     await Promise.resolve();
     expect(sent.slice(before)).toEqual([]);
 
-    vi.mocked(rows[0]!.getBoundingClientRect).mockReturnValue({ top: -56, bottom: 0 } as DOMRect);
-    vi.mocked(rows[1]!.getBoundingClientRect).mockReturnValue({ top: 0, bottom: 56 } as DOMRect);
+    vi.mocked(rows[0]!.getBoundingClientRect).mockReturnValue({ top: -55, bottom: 1, height: 56 } as DOMRect);
+    vi.mocked(rows[1]!.getBoundingClientRect).mockReturnValue({ top: 0, bottom: 56, height: 56 } as DOMRect);
     list.dispatchEvent(new Event("scroll"));
     expect(rows[0]?.querySelector(".digit")).toBeNull();
     expect(rows[1]?.querySelector(".digit")?.textContent).toBe("1");
     keydown(input, "1");
     await Promise.resolve();
     expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-visible-digits", targetTabId: 1, targetWindowId: 1 }]);
+  });
+
+  it("leaves modified chords unowned instead of treating them as selection commands", () => {
+    const before = sent.length;
+    const { input } = openOverlay("session-modified-keys");
+    keydown(input, "Tab");
+    for (const [key, init] of [
+      ["1", { ctrlKey: true }],
+      ["j", { metaKey: true }],
+      ["ArrowDown", { altKey: true }],
+      ["Enter", { ctrlKey: true }],
+    ] as const) {
+      expect(keydown(input, key, init).defaultPrevented).toBe(false);
+    }
+    expect(sent.slice(before)).toEqual([]);
   });
 
   it("does not intercept composing keys and leaves Shift+Tab as a non-trapping focus path", () => {
@@ -353,6 +381,25 @@ describe("ordinary-page overlay", () => {
     expect(root.activeElement).toBe(input);
     expect(input.selectionStart).toBe(1);
     expect(input.selectionEnd).toBe(1);
+  });
+
+  it("clears selectable results after a commit error so hidden rows cannot navigate or recommit", async () => {
+    sendMessage.mockImplementationOnce(async (message: unknown) => {
+      sent.push(message);
+      return { ok: false, error: "Synthetic target failure" };
+    });
+    const before = sent.length;
+    const { root, input } = openOverlay("session-commit-error-keys");
+    keydown(input, "Enter");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(root.textContent).toContain("Synthetic target failure");
+    expect(root.querySelectorAll('[role="option"]')).toHaveLength(0);
+
+    keydown(input, "ArrowDown");
+    keydown(input, "Enter");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-commit-error-keys", targetTabId: 2, targetWindowId: 2 }]);
   });
 
   it("keeps Escape operable while a commit response is pending and prevents duplicate commits", async () => {
