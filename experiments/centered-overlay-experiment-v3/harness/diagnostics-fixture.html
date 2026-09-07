@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>V3 diagnostics fixture</title></head>
+<body>
+  <button id="download" type="button">Download timeline JSON</button>
+  <pre id="output">Reading timeline…</pre>
+  <script>
+    globalThis.chrome.runtime = globalThis.chrome.runtime || {};
+    globalThis.chrome.storage = {
+      session: {
+        async get() {
+          return {
+            "peek-centered-overlay:timeline-v3": {
+              schemaVersion: 1,
+              runs: [{
+                schemaVersion: 1,
+                runId: "fixture-run",
+                workerInstanceId: "fixture-worker",
+                workerTimeOriginMs: 1000,
+                workerModuleEntryEpochMs: 1001,
+                secretUrl: "https://must-not-export.test/",
+                markers: [{
+                  context: "worker",
+                  marker: "action-entry",
+                  sequence: 0,
+                  timeOriginMs: 1000,
+                  nowMs: 2,
+                  comparableEpochMs: 1002,
+                  secretContent: "must-not-export"
+                }]
+              }]
+            }
+          };
+        }
+      }
+    };
+  </script>
+  <script src="../dist/unpacked/diagnostics.js"></script>
+</body>
+</html>

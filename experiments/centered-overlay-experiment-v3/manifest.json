@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Peek Centred Overlay Instrumented v3",
+  "description": "Disposable instrumented overlay test for Dia. Can modify the invoked page; records timing markers but no page content.",
+  "version": "0.0.3",
+  "minimum_chrome_version": "120",
+  "incognito": "not_allowed",
+  "permissions": ["tabs", "activeTab", "scripting", "storage"],
+  "action": {
+    "default_title": "Toggle Peek centred overlay test"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "diagnostics.html",
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Space",
+        "mac": "MacCtrl+Space"
+      },
+      "description": "Toggle the Peek centred overlay test"
+    }
+  }
+}

@@ -1,32 +1,30 @@
-# Peek — product discovery
+# Peek
 
-> Living document. Update only after decisions are confirmed in the Peek product thread.
+A keyboard-first Chrome tab finder. V0 does one complete job: find and explicitly switch to an open tab in the current profile across normal windows.
 
-## One-line idea
+## Agreed first release
 
-A lightweight, beautiful browser command palette that starts by searching and switching open Chrome tabs.
+- Search titles and URLs only. Strong textual matches beat recency; support remembered fragments and shortened input without special syntax.
+- Show a centred in-page palette on ordinary pages and a centred browser-created extension window on restricted pages. No native companion.
+- Use favicon, prominent title and quieter meaningful domain/path in light and dark appearance. No static shortcut footer.
+- Highlight the previously viewed distinct tab when known. Highlight movement never activates. Explicit selection switches; Escape cancels.
+- Support typing with arrows/Enter, plus Tab-toggle selection with j/k and visible 1–9 choices. Restore query/caret when returning to typing.
+- Reveal coherent initial content, preserve the first keystroke and avoid disruptive shortcut conflicts.
+- Use minimal Effect TS at browser/lifecycle boundaries, pure search/interaction and synchronous MV3 entrypoints. Remaining tooling choices belong to the first implementation ticket.
 
-## MVP direction
+Google Chrome is the target. Discovery testing in Dia is evidence about Dia only, not verified Chrome compatibility. Production implementation and release verification have not started.
 
-- Search open tabs
-- Fuzzy matching across tab title and URL
-- Keyboard-first interaction
-- Select a result to focus its tab
-- Simple, tasteful popup UI
+## Canonical documents
 
-## Longer-term direction
+- [First-release specification](docs/first-release-spec.md)
+- [Acceptance contract and evidence limits](docs/first-release-acceptance.md)
+- [Implementation ticket index](docs/tasks/README.md)
+- [Discovery archive](docs/discovery/README.md)
 
-- History and bookmarks
-- Recently closed tabs
-- Browser navigation
-- Small, discoverable commands and tab actions
+The spec separates confirmed product decisions from owner-selected defaults. BB Tasks remains the live decision and implementation tracker; repository task files are a durable snapshot.
 
-## Non-goals for now
+## Later releases
 
-- Building a complicated browser replacement
-- A settings-heavy productivity suite
-- AI features before the core interaction feels excellent
+History, bookmarks, recently closed tabs, browser navigation/actions and automatic folders remain future candidates. Semantic/page-content search, global or cross-profile invocation, incognito search, broad host permissions, settings and a native companion are outside v0. These are not promises for subsequent releases.
 
-## Open questions
-
-_To be filled in through product discovery._
+Kavii's daily-use bar is less query formulation and faster finding than manual tab scanning, without disruptive shortcuts. See the acceptance contract for the concrete scenarios and verification gates.

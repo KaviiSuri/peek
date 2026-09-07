@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Overlay performance controller</title></head>
+<body>
+  <h1>Built overlay performance samples</h1>
+  <pre id="status">running</pre>
+  <div id="stage"></div>
+  <script>
+    (() => {
+      const sampleCount = 15;
+      const results = [];
+      const stage = document.getElementById("stage");
+      const status = document.getElementById("status");
+      const percentile = (values, p) => {
+        const sorted = [...values].sort((a, b) => a - b);
+        return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * p) - 1)];
+      };
+      const summarize = (kind) => {
+        const keys = ["hostMountedMs", "scriptLoadAndEvalMs", "modelRequestMs", "modelRoundtripMs", "inputFocusedMs", "fontsReadyMs", "secondRafMs", "resourceDurationMs"];
+        return Object.fromEntries(keys.map((key) => {
+          const values = results.map((row) => row.result[kind][key]).filter(Number.isFinite);
+          return [key, {
+            median: percentile(values, 0.5),
+            p90: percentile(values, 0.9),
+            min: Math.min(...values),
+            max: Math.max(...values)
+          }];
+        }));
+      };
+      const runOne = (sample) => new Promise((resolve, reject) => {
+        const iframe = document.createElement("iframe");
+        iframe.width = "900";
+        iframe.height = "650";
+        // Keep the measured frame visible; hidden/off-screen frames are timer/rAF throttled.
+        iframe.src = `performance-fixture.html?sample=${sample}`;
+        const timeout = setTimeout(() => reject(new Error(`sample ${sample} timeout`)), 5000);
+        const onMessage = (event) => {
+          if (event.source !== iframe.contentWindow) return;
+          if (event.data?.type === "peek-perf-error") {
+            clearTimeout(timeout);
+            removeEventListener("message", onMessage);
+            iframe.remove();
+            reject(new Error(event.data.error));
+            return;
+          }
+          if (event.data?.type !== "peek-perf-result") return;
+          clearTimeout(timeout);
+          removeEventListener("message", onMessage);
+          results.push(event.data);
+          iframe.remove();
+          resolve();
+        };
+        addEventListener("message", onMessage);
+        stage.append(iframe);
+      });
+      (async () => {
+        for (let sample = 1; sample <= sampleCount; sample += 1) {
+          status.textContent = `running ${sample}/${sampleCount}`;
+          await runOne(sample);
+        }
+        const output = {
+          sampleCount,
+          freshDocumentFirst: summarize("first"),
+          sameDocumentReopen: summarize("sameDocument"),
+          transferSizes: {
+            fresh: results.map((row) => row.result.first.transferSize),
+            sameDocument: results.map((row) => row.result.sameDocument.transferSize)
+          },
+          fontsStatuses: [...new Set(results.flatMap((row) => [row.result.first.fontsStatusAtStart, row.result.sameDocument.fontsStatusAtStart]))],
+          raw: results
+        };
+        globalThis.__peekPerformanceResults = output;
+        status.id = "done";
+        status.textContent = JSON.stringify(output, null, 2);
+      })().catch((error) => {
+        globalThis.__peekPerformanceError = String(error);
+        status.id = "failed";
+        status.textContent = String(error);
+      });
+    })();
+  </script>
+</body>
+</html>

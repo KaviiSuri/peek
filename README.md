@@ -14,4 +14,12 @@ Peek starts with one simple job: find and switch between open Chrome tabs from t
 
 ## Status
 
-Early product discovery. No implementation yet.
+Discovery is complete. Production implementation has not started.
+
+- [Product direction](PRODUCT.md)
+- [First-release specification](docs/first-release-spec.md)
+- [Acceptance contract](docs/first-release-acceptance.md)
+- [Implementation tickets and dependencies](docs/tasks/README.md)
+- [Research and throwaway prototypes](docs/discovery/README.md)
+
+The experiments are archived learning tools, not production code. Chrome verification remains required; Dia discovery results are labelled separately.

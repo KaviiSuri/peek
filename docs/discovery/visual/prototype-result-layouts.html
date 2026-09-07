@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-layout="compare" data-variant="A">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Peek — DISCOVERY PROTOTYPE · result-layout comparison</title>
+<!--
+  DISCOVERY PROTOTYPE — throwaway, for Wayfinding task PEEK-8.
+  Purpose: let Kavii react to THREE row treatments for Peek's tab results,
+  using ONE identical synthetic dataset + order, so content hierarchy/density
+  is the only variable. NOT a functional search, NOT production UI.
+  All tab data is fictional/mocked. Favicons are ILLUSTRATIVE monograms, not
+  real brand assets. Nothing here implements ranking, performance, keyboard
+  navigation behavior, or an invocation shortcut. No external requests.
+-->
+<style>
+  :root{
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --radius: 12px;
+    --row-a: 36px;
+    --row-b: 54px;
+    --row-c: 36px;
+    --list-h: 384px;   /* identical viewport height for all variants */
+  }
+
+  /* ---------- THEME TOKENS (finish is identical across variants) ---------- */
+  html[data-theme="dark"]{
+    --page-bg: #0b0b0f;
+    --page-bg-2:#141419;
+    --page-fg:#e7e7ea;
+    --page-dim:#9a9aa6;
+    --ctrl-bg:#17171d;
+    --ctrl-border:#2a2a33;
+    --ctrl-fg:#d7d7de;
+    --panel-bg: rgba(28,28,34,0.72);
+    --panel-border: rgba(255,255,255,0.09);
+    --panel-shadow: 0 24px 60px -20px rgba(0,0,0,0.75), 0 2px 0 0 rgba(255,255,255,0.03) inset;
+    --panel-head-bg: rgba(255,255,255,0.02);
+    --divider: rgba(255,255,255,0.07);
+    --title-fg:#f4f4f7;
+    --meta-fg:#8b8b96;
+    --domain-fg:#a7a7b3;
+    --path-fg:#7f7f8b;
+    --section-fg:#6f6f7a;
+    --row-hover: rgba(255,255,255,0.045);
+    --sel-bg: rgba(120,132,255,0.20);
+    --sel-border: rgba(140,150,255,0.55);
+    --accent:#8b93ff;
+    --kbd-bg: rgba(255,255,255,0.08);
+    --scrim: radial-gradient(1200px 600px at 50% -10%, rgba(120,110,220,0.14), transparent 60%);
+  }
+  html[data-theme="light"]{
+    --page-bg:#eceef3;
+    --page-bg-2:#dfe2ea;
+    --page-fg:#1d1f24;
+    --page-dim:#5c606b;
+    --ctrl-bg:#ffffff;
+    --ctrl-border:#d3d7e0;
+    --ctrl-fg:#33363d;
+    --panel-bg: rgba(255,255,255,0.86);
+    --panel-border: rgba(20,22,30,0.10);
+    --panel-shadow: 0 26px 60px -22px rgba(30,35,60,0.35), 0 1px 0 0 rgba(255,255,255,0.7) inset;
+    --panel-head-bg: rgba(20,22,30,0.015);
+    --divider: rgba(20,22,30,0.09);
+    --title-fg:#14161b;
+    --meta-fg:#6a6e79;
+    --domain-fg:#565a65;
+    --path-fg:#7a7e89;
+    --section-fg:#8a8e99;
+    --row-hover: rgba(20,22,40,0.045);
+    --sel-bg: rgba(88,101,242,0.13);
+    --sel-border: rgba(88,101,242,0.5);
+    --accent:#4b56e0;
+    --kbd-bg: rgba(20,22,30,0.07);
+    --scrim: radial-gradient(1200px 600px at 50% -10%, rgba(120,120,220,0.12), transparent 60%);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:var(--font-ui);
+    color:var(--page-fg);
+    background:
+      var(--scrim),
+      linear-gradient(180deg, var(--page-bg), var(--page-bg-2));
+    background-attachment: fixed;
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+
+  /* ---------- COMPARISON CHROME (clearly NOT product UI) ---------- */
+  .proto-banner{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:8px 16px;
+    font:600 12px/1.3 var(--font-mono);
+    letter-spacing:.04em;
+    color:#fff;
+    background:repeating-linear-gradient(135deg,#c2410c,#c2410c 12px,#9a3208 12px,#9a3208 24px);
+    border-bottom:1px solid rgba(0,0,0,.35);
+  }
+  .proto-banner .tag{background:rgba(0,0,0,.35);padding:2px 8px;border-radius:6px;}
+  .proto-banner .muted{color:#ffe6d5;font-weight:500;letter-spacing:0;font-family:var(--font-ui);}
+
+  .controls{
+    position:sticky;top:0;z-index:50;
+    display:flex;gap:18px;align-items:center;flex-wrap:wrap;
+    padding:12px 16px;
+    background:var(--ctrl-bg);
+    border-bottom:1px dashed var(--ctrl-border);
+    box-shadow:0 6px 20px -14px rgba(0,0,0,.5);
+  }
+  .controls .brand{display:flex;flex-direction:column;line-height:1.15;margin-right:4px;}
+  .controls .brand b{font-size:13px;letter-spacing:.02em;}
+  .controls .brand span{font-size:11px;color:var(--page-dim);}
+  .cgroup{display:flex;align-items:center;gap:8px;}
+  .cgroup > label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--page-dim);}
+  .seg{display:inline-flex;border:1px solid var(--ctrl-border);border-radius:9px;overflow:hidden;background:transparent;}
+  .seg button{
+    appearance:none;border:0;background:transparent;color:var(--ctrl-fg);
+    font:600 12px var(--font-ui);padding:6px 12px;cursor:pointer;transition:background .12s,color .12s;
+  }
+  .seg button + button{border-left:1px solid var(--ctrl-border);}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:#fff;}
+  .seg button:disabled{opacity:.4;cursor:not-allowed;}
+  .hint{font-size:11px;color:var(--page-dim);margin-left:auto;max-width:340px;text-align:right;}
+  .hint kbd{font-family:var(--font-mono);background:var(--kbd-bg);padding:1px 5px;border-radius:4px;font-size:10.5px;}
+
+  .stage{padding:26px 16px 80px;}
+  .note-narrow{display:none;margin:0 auto 18px;max-width:520px;text-align:center;font-size:12.5px;color:var(--page-dim);
+    border:1px dashed var(--ctrl-border);border-radius:10px;padding:10px 14px;}
+
+  /* ---------- COMPARE GRID ---------- */
+  .grid{
+    display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));gap:22px;
+    max-width:1240px;margin:0 auto;align-items:start;
+  }
+  .col{min-width:0;}
+  .col .caption{margin:0 4px 10px;}
+  .caption .vkey{display:inline-block;font:700 11px var(--font-mono);color:#fff;background:var(--accent);
+    padding:2px 8px;border-radius:6px;letter-spacing:.06em;}
+  .caption .vname{font-weight:650;font-size:13.5px;margin-left:8px;color:var(--title-fg);}
+  .caption .vdesc{margin:6px 2px 0;font-size:12px;line-height:1.45;color:var(--page-dim);}
+
+  /* ---------- PALETTE (product UI — identical finish everywhere) ---------- */
+  .palette{
+    background:var(--panel-bg);
+    border:1px solid var(--panel-border);
+    border-radius:var(--radius);
+    box-shadow:var(--panel-shadow);
+    backdrop-filter:blur(22px) saturate(1.3);
+    -webkit-backdrop-filter:blur(22px) saturate(1.3);
+    overflow:hidden;
+  }
+  .palette .searchbar{
+    display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--panel-head-bg);
+    border-bottom:1px solid var(--divider);
+  }
+  .searchbar .glass{width:16px;height:16px;flex:0 0 auto;color:var(--meta-fg);opacity:.8;}
+  .searchbar .q{font-size:15px;color:var(--page-fg);font-weight:450;}
+  .searchbar .caret{width:1.5px;height:17px;background:var(--accent);animation:blink 1.1s step-end infinite;margin-left:-2px;}
+  @keyframes blink{50%{opacity:0;}}
+  .searchbar .count{margin-left:auto;font:500 11px var(--font-mono);color:var(--meta-fg);}
+
+  .section-label{font:600 10.5px var(--font-ui);letter-spacing:.11em;text-transform:uppercase;
+    color:var(--section-fg);padding:10px 14px 4px;}
+
+  .list{height:var(--list-h);overflow-y:auto;overflow-x:hidden;padding:2px 6px 8px;scrollbar-width:thin;}
+  .list::-webkit-scrollbar{width:9px;}
+  .list::-webkit-scrollbar-thumb{background:var(--divider);border-radius:8px;border:2px solid transparent;background-clip:content-box;}
+
+  .row{display:flex;align-items:center;gap:10px;padding:0 8px;border-radius:8px;position:relative;cursor:default;}
+  .row:hover{background:var(--row-hover);}
+  .row.sel{background:var(--sel-bg);box-shadow:inset 0 0 0 1px var(--sel-border);}
+  .row.sel::before{content:"";position:absolute;left:2px;top:18%;bottom:18%;width:2.5px;border-radius:2px;background:var(--accent);}
+
+  /* favicon */
+  .fav{width:17px;height:17px;flex:0 0 auto;border-radius:5px;display:flex;align-items:center;justify-content:center;
+    font:700 9px var(--font-ui);color:#fff;overflow:hidden;}
+  .fav svg{display:block;width:100%;height:100%;}
+
+  .title{color:var(--title-fg);font-weight:560;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .url{font-family:var(--font-mono);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .url .dom{color:var(--domain-fg);}
+  .url .sep{color:var(--path-fg);opacity:.6;padding:0 3px;}
+  .url .path{color:var(--path-fg);}
+  .kind{font-size:10.5px;color:var(--meta-fg);white-space:nowrap;}
+
+  /* Variant A — compact single row, trailing URL */
+  .vA .row{height:var(--row-a);}
+  .vA .title{flex:0 1 auto;}
+  .vA .spacer{flex:1 1 8px;min-width:8px;}
+  .vA .url{flex:0 1 auto;max-width:52%;text-align:right;direction:rtl;}      /* rtl keeps identifying tail visible */
+  .vA .url .inner{direction:ltr;unicode-bidi:plaintext;}
+
+  /* Variant B — title + second line meaningful URL */
+  .vB .row{height:var(--row-b);align-items:center;}
+  .vB .fav{width:20px;height:20px;border-radius:6px;}
+  .vB .stack{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1 1 auto;}
+  .vB .line1{display:flex;align-items:center;gap:8px;min-width:0;}
+  .vB .title{font-size:14px;}
+  .vB .url{font-size:11.5px;}
+  .vB .kind{margin-left:auto;}
+
+  /* Variant C — compact aligned title / source columns */
+  .vC .row{height:var(--row-c);display:grid;
+    grid-template-columns:17px minmax(0,84px) minmax(0,1.7fr) minmax(0,1fr);
+    gap:10px;align-items:center;overflow:hidden;}
+  .vC .col-src{min-width:0;font-family:var(--font-mono);font-size:11px;color:var(--domain-fg);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .vC .col-title{min-width:0;overflow:hidden;}
+  .vC .col-title .title{display:block;max-width:100%;}
+  .vC .col-path{min-width:0;font-family:var(--font-mono);font-size:11px;color:var(--path-fg);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right;}
+
+  /* ---------- FULL-SIZE SINGLE-VARIANT MODE ---------- */
+  html[data-layout="single"] .grid{grid-template-columns:1fr;max-width:760px;}
+  html[data-layout="single"] .col{display:none;}
+  html[data-layout="single"] .col.active{display:block;}
+  html[data-layout="single"] .switcher{display:flex;}
+  .switcher{display:none;position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:60;
+    align-items:center;gap:4px;background:var(--ctrl-bg);border:1px solid var(--ctrl-border);
+    border-radius:999px;padding:5px 6px;box-shadow:0 14px 34px -14px rgba(0,0,0,.6);}
+  .switcher button{appearance:none;border:0;background:transparent;color:var(--ctrl-fg);cursor:pointer;
+    width:30px;height:30px;border-radius:999px;font-size:15px;}
+  .switcher button:hover{background:var(--row-hover);}
+  .switcher .label{font:600 12px var(--font-ui);padding:0 10px;min-width:150px;text-align:center;}
+
+  @media (max-width: 980px){
+    .note-narrow{display:block;}
+    /* compare grid would clip; single mode is enforced by JS on narrow screens */
+  }
+</style>
+</head>
+<body>
+  <div class="proto-banner">
+    <span class="tag">DISCOVERY PROTOTYPE</span>
+    <span class="muted">Mocked tabs · illustrative favicons · not a working search · no ranking / shortcut / keyboard behavior implied · PEEK-8</span>
+  </div>
+
+  <div class="controls" role="region" aria-label="Comparison controls (not part of Peek)">
+    <div class="brand"><b>Peek result-layout comparison</b><span>3 row treatments · identical data &amp; order</span></div>
+
+    <div class="cgroup">
+      <label>Theme</label>
+      <div class="seg" id="theme-seg">
+        <button data-theme-val="light" aria-pressed="false">Light</button>
+        <button data-theme-val="dark" aria-pressed="true">Dark</button>
+      </div>
+    </div>
+
+    <div class="cgroup">
+      <label>Layout</label>
+      <div class="seg" id="layout-seg">
+        <button data-layout-val="compare" aria-pressed="true">Side&#8209;by&#8209;side</button>
+        <button data-layout-val="single" aria-pressed="false">Full&#8209;size single</button>
+      </div>
+    </div>
+
+    <div class="cgroup" id="variant-group" style="opacity:.4;">
+      <label>Variant</label>
+      <div class="seg" id="variant-seg">
+        <button data-variant-val="A" aria-pressed="true">A</button>
+        <button data-variant-val="B" aria-pressed="false">B</button>
+        <button data-variant-val="C" aria-pressed="false">C</button>
+      </div>
+    </div>
+
+    <div class="hint">Scrolls are synced across variants. Full-size mode: <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> to switch variant.</div>
+  </div>
+
+  <div class="stage">
+    <div class="note-narrow">Narrow screen: showing one variant full-size for readability. Use the <b>Variant</b> control or arrow keys to compare A / B / C. Widen the window for the side-by-side view.</div>
+    <div class="grid" id="grid"><!-- columns injected --></div>
+  </div>
+
+  <div class="switcher" id="switcher" aria-label="Variant switcher (full-size mode)">
+    <button id="prev" title="Previous variant">&#8249;</button>
+    <div class="label" id="switch-label">A — Compact, trailing URL</div>
+    <button id="next" title="Next variant">&#8250;</button>
+  </div>
+
+<script>
+/* ============================================================
+   DISCOVERY PROTOTYPE · PEEK-8
+   One fixture, three row treatments. All data fictional/mocked.
+   ============================================================ */
+
+// ---- illustrative favicons (monograms/simple marks; NOT real brand assets) ----
+function fav(kind){
+  const M = {
+    gh:   {bg:'#24292f', mark:'gh'},
+    ghpr: {bg:'#1f6feb', mark:'PR'},
+    ghis: {bg:'#3fb950', mark:'!'},
+    ghdc: {bg:'#8957e5', mark:'#'},
+    sheet:{bg:'#188038', mark:'▦'},
+    doc:  {bg:'#1a73e8', mark:'≡'},
+    linear:{bg:'#5e6ad2', mark:'L'},
+    figma:{bg:'#a259ff', mark:'F'},
+    notion:{bg:'#111111', mark:'N'},
+    so:   {bg:'#f48024', mark:'S'},
+    mdn:  {bg:'#000000', mark:'M'},
+    local:{bg:'#3a3f4b', mark:'λ'}
+  };
+  const m = M[kind] || {bg:'#4b5563', mark:'•'};
+  const el = document.createElement('span');
+  el.className='fav';
+  el.style.background=m.bg;
+  el.textContent=m.mark;
+  el.title='illustrative favicon';
+  return el;
+}
+
+// ---- fixture: 30 overlapping work tabs (fictional). SAME array/order for all variants. ----
+const DATA = [
+  {icon:'ghpr', title:'Fix flaky retry in scheduler',            dom:'github.com', path:'acme-labs/orion/pull/2481',        kind:'PR #2481'},
+  {icon:'ghpr', title:'Fix flaky websocket reconnect test',      dom:'github.com', path:'acme-labs/orion/pull/2478',        kind:'PR #2478'},
+  {icon:'ghis', title:'Scheduler drops jobs under load',         dom:'github.com', path:'acme-labs/orion/issues/2455',      kind:'Issue #2455'},
+  {icon:'ghis', title:'Flaky test: scheduler retry backoff',     dom:'github.com', path:'acme-labs/orion/issues/2460',      kind:'Issue #2460'},
+  {icon:'ghpr', title:'Bump orion to v3.2 and update deps',      dom:'github.com', path:'acme-labs/orion/pull/2490',        kind:'PR #2490'},
+  {icon:'gh',   title:'acme-labs/orion',                         dom:'github.com', path:'acme-labs/orion',                  kind:'Repository'},
+  {icon:'ghis', title:'Atlas: memory leak in tile cache',        dom:'github.com', path:'acme-labs/atlas/issues/1207',      kind:'Issue #1207'},
+  {icon:'ghpr', title:'Cache eviction for tile store',           dom:'github.com', path:'acme-labs/atlas/pull/1210',        kind:'PR #1210'},
+  {icon:'ghpr', title:'Fix flaky retry in uploader',             dom:'github.com', path:'acme-labs/atlas/pull/1188',        kind:'PR #1188'},
+  {icon:'ghpr', title:'Refactor auth middleware',                dom:'github.com', path:'nimbus/pulse/pull/874',            kind:'PR #874'},
+  {icon:'ghpr', title:'Refactor auth middleware (part 2)',       dom:'github.com', path:'nimbus/pulse/pull/880',            kind:'PR #880'},
+  {icon:'ghis', title:'Auth token refresh race condition',       dom:'github.com', path:'nimbus/pulse/issues/869',          kind:'Issue #869'},
+  {icon:'ghdc', title:'RFC: unify auth middleware',              dom:'github.com', path:'nimbus/pulse/discussions/71',      kind:'Discussion'},
+  {icon:'ghpr', title:'Add idempotency keys to payments',        dom:'github.com', path:'orbit-hq/ledger/pull/333',         kind:'PR #333'},
+  {icon:'ghis', title:'Duplicate charge on retry',              dom:'github.com', path:'orbit-hq/ledger/issues/330',       kind:'Issue #330'},
+  {icon:'ghpr', title:'Fix flaky payment webhook test',          dom:'github.com', path:'orbit-hq/ledger/pull/341',         kind:'PR #341'},
+  {icon:'ghis', title:'Beacon: dark mode contrast fixes',        dom:'github.com', path:'vela/beacon/issues/55',            kind:'Issue #55'},
+  {icon:'ghpr', title:'Dark mode contrast fixes for beacon',     dom:'github.com', path:'vela/beacon/pull/58',              kind:'PR #58'},
+  {icon:'gh',   title:'CI · orion — run #2481 failing',          dom:'github.com', path:'acme-labs/orion/actions/runs/2481',kind:'Actions'},
+  {icon:'gh',   title:'Notifications',                           dom:'github.com', path:'notifications?query=is:unread',    kind:'Inbox'},
+  {icon:'sheet',title:'Q3 revenue forecast v4',                  dom:'docs.google.com', path:'spreadsheets/d/1a9…kQ/edit',  kind:'Google Sheets'},
+  {icon:'sheet',title:'Hiring pipeline tracker',                 dom:'docs.google.com', path:'spreadsheets/d/1f2…Xm/edit',  kind:'Google Sheets'},
+  {icon:'doc',  title:'Orion incident postmortem',              dom:'docs.google.com', path:'document/d/1z7…Pq/edit',      kind:'Google Docs'},
+  {icon:'doc',  title:'Peek — product discovery',                dom:'docs.google.com', path:'document/d/1c4…Vt/edit',      kind:'Google Docs'},
+  {icon:'linear',title:'PEEK-8 Which result layout is clearest', dom:'linear.app', path:'camb/issue/PEEK-8',               kind:'Linear'},
+  {icon:'figma',title:'Peek — palette explorations',            dom:'figma.com', path:'file/2Kd…/Peek-explorations',       kind:'Figma'},
+  {icon:'notion',title:'Eng weekly notes',                       dom:'notion.so', path:'camb/Eng-weekly-9f3c…',            kind:'Notion'},
+  {icon:'so',   title:'Query all tabs across Chrome windows',    dom:'stackoverflow.com', path:'questions/12345678',        kind:'Stack Overflow'},
+  {icon:'mdn',  title:'chrome.tabs.query() — reference',         dom:'developer.mozilla.org', path:'…/API/chrome.tabs/query',kind:'MDN'},
+  {icon:'local',title:'Vite + Peek dev server',                  dom:'localhost:5173', path:'/popup/index.html',            kind:'Localhost'}
+];
+
+const SEL_INDEX = 2;          // selected row — identical across variants
+const SECTION = 'Open tabs';  // quiet section label (NOT an instructional footer)
+
+// URL middle-truncation that preserves identifying head + tail.
+function truncPath(path, max){
+  if(path.length <= max) return path;
+  const parts = path.split('/');
+  if(parts.length <= 2) return path.slice(0, max-1)+'…';
+  const head = parts[0];
+  const tail = parts.slice(-2).join('/');
+  let out = head + '/…/' + tail;
+  if(out.length > max) out = '…/' + tail;
+  return out;
+}
+
+function urlEl(d, {mono=true, pathMax=40}={}){
+  const wrap = document.createElement('span'); wrap.className='url';
+  const inner = document.createElement('span'); inner.className='inner';
+  const dom = document.createElement('span'); dom.className='dom'; dom.textContent=d.dom;
+  const sep = document.createElement('span'); sep.className='sep'; sep.textContent='/';
+  const path = document.createElement('span'); path.className='path'; path.textContent=truncPath(d.path, pathMax);
+  inner.append(dom, sep, path);
+  wrap.append(inner);
+  return wrap;
+}
+
+// ---- row builders (structurally different; identical finish) ----
+function rowA(d,i){
+  const r=document.createElement('div'); r.className='row'+(i===SEL_INDEX?' sel':'');
+  const title=document.createElement('span'); title.className='title'; title.textContent=d.title;
+  const spacer=document.createElement('span'); spacer.className='spacer';
+  const url=urlEl(d,{pathMax:38});
+  r.append(fav(d.icon), title, spacer, url);
+  return r;
+}
+function rowB(d,i){
+  const r=document.createElement('div'); r.className='row'+(i===SEL_INDEX?' sel':'');
+  const stack=document.createElement('div'); stack.className='stack';
+  const l1=document.createElement('div'); l1.className='line1';
+  const title=document.createElement('span'); title.className='title'; title.textContent=d.title;
+  const kind=document.createElement('span'); kind.className='kind'; kind.textContent=d.kind;
+  l1.append(title, kind);
+  const url=urlEl(d,{pathMax:56});
+  stack.append(l1, url);
+  r.append(fav(d.icon), stack);
+  return r;
+}
+function rowC(d,i){
+  const r=document.createElement('div'); r.className='row'+(i===SEL_INDEX?' sel':'');
+  const src=document.createElement('span'); src.className='col-src'; src.textContent=d.dom;
+  const titleWrap=document.createElement('span'); titleWrap.className='col-title';
+  const title=document.createElement('span'); title.className='title'; title.textContent=d.title;
+  titleWrap.append(title);
+  const path=document.createElement('span'); path.className='col-path'; path.textContent=truncPath(d.path,34);
+  r.append(fav(d.icon), src, titleWrap, path);
+  return r;
+}
+
+const VARIANTS = [
+  {key:'A', cls:'vA', name:'Compact, trailing URL', build:rowA,
+   desc:'One line per tab. Bold title, then the URL run right-aligned at the row end. Densest — most tabs on screen; identity lives in the trailing path.'},
+  {key:'B', cls:'vB', name:'Title + second-line URL', build:rowB,
+   desc:'Two lines per tab. Prominent title with source on line 1; full meaningful domain + path on line 2. Roomiest — fewer tabs per screen, most disambiguation surface.'},
+  {key:'C', cls:'vC', name:'Aligned title / source columns', build:rowC,
+   desc:'One line per tab, but domain, title and path sit in fixed aligned columns. Compact like A, yet scannable down a column when many tabs share a domain.'}
+];
+
+function buildList(v){
+  const p=document.createElement('div'); p.className='palette '+v.cls;
+  p.innerHTML =
+    '<div class="searchbar"><svg class="glass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>'+
+    '<span class="q">flaky retry</span><span class="caret"></span>'+
+    '<span class="count">'+DATA.length+' tabs</span></div>'+
+    '<div class="section-label">'+SECTION+'</div>';
+  const list=document.createElement('div'); list.className='list';
+  DATA.forEach((d,i)=> list.append(v.build(d,i)));
+  p.append(list);
+  return {palette:p, list};
+}
+
+// ---- render grid ----
+const grid=document.getElementById('grid');
+const lists=[];
+VARIANTS.forEach((v,idx)=>{
+  const col=document.createElement('div'); col.className='col'+(idx===0?' active':''); col.dataset.variant=v.key;
+  const cap=document.createElement('div'); cap.className='caption';
+  cap.innerHTML='<span class="vkey">'+v.key+'</span><span class="vname">'+v.name+'</span><p class="vdesc">'+v.desc+'</p>';
+  const {palette,list}=buildList(v);
+  col.append(cap, palette);
+  grid.append(col);
+  lists.push(list);
+});
+
+// ---- synced scroll (compare mode only) ----
+let syncing=false;
+lists.forEach(l=>{
+  l.addEventListener('scroll',()=>{
+    if(syncing || document.documentElement.dataset.layout!=='compare') return;
+    syncing=true;
+    lists.forEach(o=>{ if(o!==l) o.scrollTop=l.scrollTop; });
+    requestAnimationFrame(()=>syncing=false);
+  });
+});
+
+// ---- controls ----
+const html=document.documentElement;
+function setPressed(segId, attr, val){
+  document.querySelectorAll('#'+segId+' button').forEach(b=>{
+    b.setAttribute('aria-pressed', String(b.dataset[attr]===val));
+  });
+}
+document.getElementById('theme-seg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  html.dataset.theme=b.dataset.themeVal; setPressed('theme-seg','themeVal',b.dataset.themeVal);
+});
+document.getElementById('layout-seg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  applyLayout(b.dataset.layoutVal, true);
+});
+document.getElementById('variant-seg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b||b.disabled) return; setVariant(b.dataset.variantVal);
+});
+document.getElementById('prev').addEventListener('click',()=>cycle(-1));
+document.getElementById('next').addEventListener('click',()=>cycle(1));
+
+function applyLayout(mode, userInitiated){
+  html.dataset.layout=mode;
+  setPressed('layout-seg','layoutVal',mode);
+  const vg=document.getElementById('variant-group');
+  const inSingle = mode==='single';
+  vg.style.opacity = inSingle? '1':'.4';
+  document.querySelectorAll('#variant-seg button').forEach(b=> b.disabled = !inSingle);
+  if(inSingle) setVariant(html.dataset.variant||'A');
+}
+function setVariant(key){
+  html.dataset.variant=key;
+  setPressed('variant-seg','variantVal',key);
+  document.querySelectorAll('.col').forEach(c=> c.classList.toggle('active', c.dataset.variant===key));
+  const v=VARIANTS.find(x=>x.key===key);
+  document.getElementById('switch-label').textContent=key+' — '+v.name;
+}
+function cycle(dir){
+  const keys=VARIANTS.map(v=>v.key);
+  let i=keys.indexOf(html.dataset.variant||'A');
+  i=(i+dir+keys.length)%keys.length;
+  setVariant(keys[i]);
+}
+document.addEventListener('keydown',e=>{
+  if(html.dataset.layout!=='single') return;
+  const t=e.target; if(t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
+  if(e.key==='ArrowLeft'){cycle(-1);e.preventDefault();}
+  if(e.key==='ArrowRight'){cycle(1);e.preventDefault();}
+});
+
+// ---- narrow-screen guard: force single so nothing clips ----
+const mq=window.matchMedia('(max-width: 980px)');
+function handleNarrow(){
+  const layoutButtons=document.querySelectorAll('#layout-seg button');
+  if(mq.matches){
+    if(html.dataset.layout!=='single') applyLayout('single');
+    layoutButtons.forEach(b=> b.disabled = b.dataset.layoutVal==='compare');
+  }else{
+    layoutButtons.forEach(b=> b.disabled=false);
+  }
+}
+mq.addEventListener('change',handleNarrow);
+handleNarrow();
+</script>
+</body>
+</html>

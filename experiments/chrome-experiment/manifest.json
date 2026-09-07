@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Peek Chrome Discovery Spike",
+  "description": "Throwaway test vehicle for browser-scoped invocation, focus, tab selection, and previous-tab behavior. Not production Peek.",
+  "version": "0.0.1",
+  "minimum_chrome_version": "120",
+  "incognito": "not_allowed",
+  "permissions": ["tabs", "storage"],
+  "action": {
+    "default_title": "Open Peek discovery spike",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Space",
+        "mac": "Alt+Space"
+      },
+      "description": "Open the Peek discovery spike"
+    }
+  }
+}

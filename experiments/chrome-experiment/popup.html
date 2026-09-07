@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Peek discovery spike</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <strong>Peek discovery spike</strong>
+          <span class="prototype">TEST VEHICLE</span>
+        </div>
+        <p id="command-state">Checking browser command…</p>
+      </header>
+      <input
+        id="query"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Filter open tabs"
+        placeholder="Filter title + URL"
+      />
+      <p class="filter-note">Literal test filter: every token must occur in title or URL. Not final search.</p>
+      <ol id="results" aria-label="Open tabs"></ol>
+      <p id="status" role="status" aria-live="polite"></p>
+      <details>
+        <summary>Experiment observations</summary>
+        <pre id="observations"></pre>
+      </details>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+# Peek Chrome constraints investigation
+
+You are a Pi child agent supporting Wayfinding, not implementing or choosing the stack. Read README.md, PRODUCT.md and `bb tasks show PEEK-4`. Parent owns the map and product conversation. Kavii authorized two concurrent evidence-gathering agents with no human review gate for Wayfinding research; product decisions remain his.
+
+Goal: establish what Chrome actually allows so we can test comfortable invocation and result navigation without guessing. "if ... the shortcut came too much in my way for other apps" Kavii would abandon Peek. Website Cmd+K palettes (GitHub, Linear, BB) must not become routine conflicts. Prefer two-key invocation, but test three-key comfort later. Neovim Space-s-f is modal and explicitly NOT a sequence to transplant into Chrome. Do not build a custom shortcut engine.
+
+Confirmed product scope: Chrome-focused invocation only, all windows in current profile, no cross-profile search, title/URL retrieval, default visible list, previous tab default selection, highlight never activates a tab until explicit selection. 25–30+ overlapping tabs, especially GitHub. No semantic/content search promise or global shortcut.
+
+Investigate current official Chrome documentation using agent_browser: extension command keys and OS/platform restrictions; precedence and conflict handling with Chrome and page shortcuts; user reassignment, detecting unassigned/conflicted keys; popup/other presentation focus and keyboard implications without choosing a UI architecture; querying titles/URLs across windows in one profile and required permissions; activating tab and correct window; available recency data and limitations. Clearly distinguish documented facts, deductions, and things requiring hands-on verification. Do not claim a candidate is globally conflict-free. Highlight privacy/permission implications only as facts and open trade-offs.
+
+Deliver a bounded Markdown evidence report with a fact/source/implication matrix and a small set of realistic shortcut candidates worth testing, if defensible. No final shortcut, framework, architecture, or stack selection. No extension code, prototype, installs, browser setting changes or live tests that mutate user browsing. Use an isolated named browser session in agent_browser for public docs, never attach to Kavii's profile or another worker session. No delegation.
+
+Scope: repo READ ONLY; git pointer is broken, do not repair it, commit, or edit PRODUCT.md. Write only under your own BB_THREAD_STORAGE (absolute paths); external research artifacts do not need commits. Attach report to PEEK-4 and post one substantive evidence comment. Parent claims/attaches task; do not mark it done/in_review, change description, or change map. No review ceremony or merging.
+
+Validate all material claims against their cited primary source; report unknowns instead of filling gaps. Return concise findings, exact source links, artifact paths, verification and remaining questions to parent, not directly to Kavii.

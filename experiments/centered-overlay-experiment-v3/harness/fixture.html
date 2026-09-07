@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Built overlay fixture</title>
+</head>
+<body>
+  <button id="prior">Previously focused fixture control</button>
+  <p>This page is a local harness. Its content must remain unread by the overlay.</p>
+  <script>
+    (() => {
+      const listeners = [];
+      const calls = [];
+      let focusedInputs = 0;
+      const originalFocus = HTMLInputElement.prototype.focus;
+      HTMLInputElement.prototype.focus = function (...args) {
+        focusedInputs += 1;
+        return originalFocus.apply(this, args);
+      };
+      document.getElementById("prior").focus();
+
+      const runtime = {
+        onMessage: {
+          addListener(listener) { listeners.push(listener); },
+          removeListener(listener) {
+            const index = listeners.indexOf(listener);
+            if (index >= 0) listeners.splice(index, 1);
+          }
+        },
+        async sendMessage(message) {
+          calls.push(message);
+          if (message.type === "peek-centered-overlay:get-model") {
+            return {
+              ok: true,
+              instrumentationRunId: "fixture-run",
+              model: {
+                currentTabId: 1,
+                previousTabId: 2,
+                historyAvailable: true,
+                tabs: [
+                  { id: 1, windowId: 1, title: "Current fixture", url: "https://fixture.test/current", active: true, lastAccessed: 30 },
+                  { id: 2, windowId: 1, title: "Previous Orion", url: "https://github.com/acme/orion/issues/8", active: false, lastAccessed: 20 },
+                  { id: 3, windowId: 2, title: "Scheduler retry", url: "https://linear.app/acme/issue/OPS-7", active: true, lastAccessed: 10 }
+                ]
+              }
+            };
+          }
+          if (message.type === "peek-centered-overlay:commit") {
+            for (const listener of [...listeners]) {
+              listener({ type: "peek-centered-overlay:teardown" }, {}, () => undefined);
+            }
+            return { ok: true, outcome: "activated" };
+          }
+          return { ok: true };
+        }
+      };
+      globalThis.chrome.runtime = runtime;
+      globalThis.__peekHarness = {
+        calls,
+        listeners,
+        get focusedInputs() { return focusedInputs; }
+      };
+    })();
+  </script>
+  <script src="../dist/unpacked/overlay.js"></script>
+  <script>
+    setTimeout(() => {
+      const host = document.getElementById("peek-centered-overlay-experiment-host");
+      document.documentElement.dataset.peekMount = host ? "present" : "missing";
+      document.documentElement.dataset.peekInputFocused = globalThis.__peekHarness.focusedInputs > 0 ? "yes" : "no";
+    }, 100);
+  </script>
+</body>
+</html>

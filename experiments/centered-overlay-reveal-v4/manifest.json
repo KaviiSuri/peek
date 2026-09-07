@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Peek Centred Overlay Experiment v2",
+  "description": "Disposable in-page overlay test for Dia. Can execute and modify the invoked active page; never reads page content.",
+  "version": "0.0.2",
+  "minimum_chrome_version": "120",
+  "incognito": "not_allowed",
+  "permissions": ["tabs", "activeTab", "scripting", "storage"],
+  "action": {
+    "default_title": "Toggle Peek centred overlay test"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Space",
+        "mac": "MacCtrl+Space"
+      },
+      "description": "Toggle the Peek centred overlay test"
+    }
+  }
+}

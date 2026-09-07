@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-variant="direct">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Peek — DISCOVERY PROTOTYPE · keyboard-feel experiment</title>
+<!--
+  DISCOVERY PROTOTYPE — throwaway, Wayfinding task PEEK-5.
+  Question: does DIRECT keyboard nav while typing feel better than an explicit
+  SELECTION MODE? Two switchable experimental variants over ONE synthetic
+  30-tab fixture, B layout (title + second-line URL). Chosen visual direction.
+
+  THIS IS NOT: a real Chrome shortcut, a fuzzy matcher, a ranking validator,
+  a speed test, or an extension. Invocation is an external experiment button,
+  NOT a Chrome hotkey. Tabs are simulated; the real browser never changes.
+  Result order is a fixed, precomputed scenario set derived from the PEEK-3
+  acceptance examples (free-play filter is approximate, NOT ranking).
+  Keystroke counts are a neutral record; they do NOT prove speed.
+-->
+<style>
+  :root{
+    --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --radius:12px;
+  }
+  html[data-theme="dark"]{
+    --page-bg:#0b0b0f;--page-bg2:#141419;--page-fg:#e7e7ea;--page-dim:#9a9aa6;
+    --ctrl-bg:#17171d;--ctrl-border:#2a2a33;--ctrl-fg:#d7d7de;
+    --panel-bg:rgba(28,28,34,0.74);--panel-border:rgba(255,255,255,0.09);
+    --panel-shadow:0 24px 60px -20px rgba(0,0,0,.75),0 2px 0 0 rgba(255,255,255,.03) inset;
+    --head-bg:rgba(255,255,255,0.02);--divider:rgba(255,255,255,0.07);
+    --title-fg:#f4f4f7;--meta-fg:#8b8b96;--domain-fg:#a7a7b3;--path-fg:#7f7f8b;--section-fg:#6f6f7a;
+    --hover:rgba(255,255,255,0.045);--sel-bg:rgba(120,132,255,0.20);--sel-border:rgba(140,150,255,0.55);
+    --accent:#8b93ff;--kbd-bg:rgba(255,255,255,0.08);
+    --card-bg:#141419;--card-border:#262630;
+    --scrim:radial-gradient(1200px 600px at 50% -10%,rgba(120,110,220,0.14),transparent 60%);
+    --ok:#57c98b;--warn:#e0b34b;
+  }
+  html[data-theme="light"]{
+    --page-bg:#eceef3;--page-bg2:#dfe2ea;--page-fg:#1d1f24;--page-dim:#5c606b;
+    --ctrl-bg:#ffffff;--ctrl-border:#d3d7e0;--ctrl-fg:#33363d;
+    --panel-bg:rgba(255,255,255,0.88);--panel-border:rgba(20,22,30,0.10);
+    --panel-shadow:0 26px 60px -22px rgba(30,35,60,.35),0 1px 0 0 rgba(255,255,255,.7) inset;
+    --head-bg:rgba(20,22,30,0.015);--divider:rgba(20,22,30,0.09);
+    --title-fg:#14161b;--meta-fg:#6a6e79;--domain-fg:#565a65;--path-fg:#7a7e89;--section-fg:#8a8e99;
+    --hover:rgba(20,22,40,0.045);--sel-bg:rgba(88,101,242,0.13);--sel-border:rgba(88,101,242,0.5);
+    --accent:#4b56e0;--kbd-bg:rgba(20,22,30,0.07);
+    --card-bg:#ffffff;--card-border:#dfe3ea;
+    --scrim:radial-gradient(1200px 600px at 50% -10%,rgba(120,120,220,0.12),transparent 60%);
+    --ok:#1f9d57;--warn:#a9791b;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{font-family:var(--font-ui);color:var(--page-fg);
+    background:var(--scrim),linear-gradient(180deg,var(--page-bg),var(--page-bg2));
+    background-attachment:fixed;min-height:100vh;-webkit-font-smoothing:antialiased;}
+
+  /* proto chrome */
+  .proto-banner{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:8px 16px;
+    font:600 12px/1.3 var(--font-mono);letter-spacing:.04em;color:#fff;
+    background:repeating-linear-gradient(135deg,#c2410c,#c2410c 12px,#9a3208 12px,#9a3208 24px);
+    border-bottom:1px solid rgba(0,0,0,.35);}
+  .proto-banner .tag{background:rgba(0,0,0,.35);padding:2px 8px;border-radius:6px;}
+  .proto-banner .muted{color:#ffe6d5;font-weight:500;letter-spacing:0;font-family:var(--font-ui);}
+
+  .controls{position:sticky;top:0;z-index:50;display:flex;gap:16px;align-items:center;flex-wrap:wrap;
+    padding:12px 16px;background:var(--ctrl-bg);border-bottom:1px dashed var(--ctrl-border);
+    box-shadow:0 6px 20px -14px rgba(0,0,0,.5);}
+  .controls .brand{display:flex;flex-direction:column;line-height:1.15;margin-right:2px;}
+  .controls .brand b{font-size:13px;}
+  .controls .brand span{font-size:11px;color:var(--page-dim);}
+  .cgroup{display:flex;align-items:center;gap:8px;}
+  .cgroup>label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--page-dim);}
+  .seg{display:inline-flex;border:1px solid var(--ctrl-border);border-radius:9px;overflow:hidden;}
+  .seg button{appearance:none;border:0;background:transparent;color:var(--ctrl-fg);
+    font:600 12px var(--font-ui);padding:6px 12px;cursor:pointer;}
+  .seg button+button{border-left:1px solid var(--ctrl-border);}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:#fff;}
+  .btn{appearance:none;border:1px solid var(--ctrl-border);background:transparent;color:var(--ctrl-fg);
+    font:600 12px var(--font-ui);padding:7px 13px;border-radius:9px;cursor:pointer;}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn:hover{background:var(--hover);}
+  .btn.primary:hover{filter:brightness(1.05);}
+
+  .stage{max-width:1160px;margin:0 auto;padding:22px 16px 90px;
+    display:grid;grid-template-columns:1fr 360px;gap:24px;align-items:start;}
+  @media (max-width:900px){ .stage{grid-template-columns:1fr;} }
+
+  /* ---- experiment desk (left) ---- */
+  .desk{display:flex;flex-direction:column;gap:16px;min-width:0;}
+  .exp-card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:14px 16px;}
+  .exp-card h3{margin:0 0 4px;font-size:13px;letter-spacing:.02em;}
+  .exp-card p{margin:0;font-size:12px;color:var(--page-dim);line-height:1.5;}
+  .exp-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px;}
+  .tasks{display:flex;flex-direction:column;gap:8px;margin-top:10px;}
+  .task{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--card-border);border-radius:10px;padding:9px 11px;cursor:pointer;background:transparent;text-align:left;color:inherit;}
+  .task:hover{background:var(--hover);}
+  .task.active{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);}
+  .task .n{font:700 11px var(--font-mono);color:#fff;background:var(--accent);border-radius:6px;padding:2px 7px;flex:0 0 auto;}
+  .task .tx{font-size:12.5px;line-height:1.4;}
+  .task .tx b{color:var(--title-fg);}
+  .task .tx .tgt{color:var(--page-dim);}
+
+  /* simulated Chrome (external feedback) */
+  .sim{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;overflow:hidden;}
+  .sim .simhead{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--divider);font-size:11px;color:var(--page-dim);}
+  .sim .dot{width:9px;height:9px;border-radius:50%;background:var(--card-border);}
+  .sim .simbody{padding:12px 14px;display:flex;flex-direction:column;gap:12px;}
+  .simtab{display:flex;gap:10px;align-items:center;padding:9px 11px;border-radius:9px;border:1px solid var(--card-border);}
+  .simtab.current{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--sel-border);}
+  .simtab .lbl{font:600 10px var(--font-ui);letter-spacing:.08em;text-transform:uppercase;color:var(--meta-fg);width:64px;flex:0 0 auto;}
+  .simtab .t{min-width:0;}
+  .simtab .t .tt{font-size:13px;font-weight:600;color:var(--title-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .simtab .t .uu{font:11px var(--font-mono);color:var(--path-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .lastact{font-size:12px;color:var(--page-dim);min-height:16px;}
+  .lastact b{color:var(--title-fg);}
+  .disclaim{font-size:10.5px;color:var(--page-dim);border-top:1px dashed var(--card-border);padding-top:8px;}
+
+  .log{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:12px 14px;}
+  .log h3{margin:0 0 8px;font-size:13px;}
+  .log table{width:100%;border-collapse:collapse;font-size:11.5px;}
+  .log th,.log td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--divider);vertical-align:top;}
+  .log th{color:var(--section-fg);font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:.06em;}
+  .log td.num{font-family:var(--font-mono);}
+  .log .empty{color:var(--page-dim);font-size:12px;}
+
+  /* ---- Peek palette overlay ---- */
+  .scrim-overlay{position:fixed;inset:0;background:rgba(6,6,10,.5);backdrop-filter:blur(2px);
+    display:none;align-items:flex-start;justify-content:center;z-index:80;}
+  html[data-open="1"] .scrim-overlay{display:flex;}
+  .palette{margin-top:11vh;width:min(680px,92vw);background:var(--panel-bg);
+    border:1px solid var(--panel-border);border-radius:var(--radius);box-shadow:var(--panel-shadow);
+    backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);overflow:hidden;}
+  .searchbar{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--head-bg);border-bottom:1px solid var(--divider);}
+  .searchbar .glass{width:16px;height:16px;color:var(--meta-fg);opacity:.85;flex:0 0 auto;}
+  .searchbar input{flex:1 1 auto;background:transparent;border:0;outline:0;color:var(--page-fg);
+    font:450 16px var(--font-ui);min-width:0;}
+  .searchbar input::placeholder{color:var(--meta-fg);}
+  .modepill{font:600 10.5px var(--font-ui);letter-spacing:.02em;border-radius:999px;padding:3px 9px;white-space:nowrap;
+    background:var(--sel-bg);color:var(--accent);border:1px solid var(--sel-border);}
+  .searchbar .count{font:500 11px var(--font-mono);color:var(--meta-fg);white-space:nowrap;}
+
+  .scenetag{font:600 10px var(--font-ui);letter-spacing:.06em;text-transform:uppercase;
+    padding:6px 14px 0;color:var(--section-fg);}
+  .scenetag em{color:var(--warn);font-style:normal;}
+
+  .list{max-height:46vh;overflow-y:auto;padding:6px 6px 8px;scrollbar-width:thin;}
+  .list::-webkit-scrollbar{width:9px;}
+  .list::-webkit-scrollbar-thumb{background:var(--divider);border-radius:8px;border:2px solid transparent;background-clip:content-box;}
+
+  .row{display:flex;align-items:center;gap:10px;padding:0 8px;height:54px;border-radius:8px;position:relative;}
+  .row:hover{background:var(--hover);}
+  .row.sel{background:var(--sel-bg);box-shadow:inset 0 0 0 1px var(--sel-border);}
+  .row.sel::before{content:"";position:absolute;left:2px;top:16%;bottom:16%;width:2.5px;border-radius:2px;background:var(--accent);}
+  .badge{display:none;flex:0 0 auto;width:20px;height:20px;border-radius:6px;align-items:center;justify-content:center;
+    font:700 11px var(--font-mono);background:var(--kbd-bg);color:var(--page-fg);}
+  .list.selecting .badge{display:flex;}
+  .list.selecting .row:nth-child(n+10) .badge{visibility:hidden;} /* only 1–9 get numbers */
+  .fav{width:20px;height:20px;flex:0 0 auto;border-radius:6px;display:flex;align-items:center;justify-content:center;
+    font:700 9px var(--font-ui);color:#fff;}
+  .stack{min-width:0;display:flex;flex-direction:column;gap:2px;flex:1 1 auto;}
+  .line1{display:flex;align-items:center;gap:8px;min-width:0;}
+  .title{color:var(--title-fg);font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kind{font-size:10.5px;color:var(--meta-fg);white-space:nowrap;margin-left:auto;}
+  .url{font-family:var(--font-mono);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .url .dom{color:var(--domain-fg);}.url .sep{color:var(--path-fg);opacity:.6;padding:0 3px;}.url .path{color:var(--path-fg);}
+  .syn{font-size:10px;color:var(--warn);margin-left:6px;}
+  .emptyrow{padding:22px 14px;color:var(--page-dim);font-size:13px;text-align:center;}
+
+  .hintbar{padding:8px 14px;border-top:1px solid var(--divider);font-size:11.5px;color:var(--page-dim);display:none;align-items:center;gap:8px;}
+  .list.selecting ~ .hintbar{display:flex;}
+  kbd{font-family:var(--font-mono);background:var(--kbd-bg);padding:1px 6px;border-radius:5px;font-size:10.5px;}
+</style>
+</head>
+<body>
+  <div class="proto-banner">
+    <span class="tag">DISCOVERY PROTOTYPE</span>
+    <span class="muted">Simulated tabs · external launch button (not a Chrome shortcut) · fixed scenario order (not a matcher/ranking) · keystrokes ≠ speed · PEEK-5</span>
+  </div>
+
+  <div class="controls">
+    <div class="brand"><b>Peek keyboard-feel experiment</b><span>Direct vs Selection-mode · same fixture &amp; order</span></div>
+    <div class="cgroup"><label>Experiment</label>
+      <div class="seg" id="variant-seg">
+        <button data-variant-val="direct" aria-pressed="true">Direct (type &amp; arrow)</button>
+        <button data-variant-val="selection" aria-pressed="false">Selection mode</button>
+      </div>
+    </div>
+    <div class="cgroup"><label>Theme</label>
+      <div class="seg" id="theme-seg">
+        <button data-theme-val="light" aria-pressed="false">Light</button>
+        <button data-theme-val="dark" aria-pressed="true">Dark</button>
+      </div>
+    </div>
+    <button class="btn primary" id="open-btn">Open Peek ▸</button>
+    <button class="btn" id="reset-btn">Reset states</button>
+  </div>
+
+  <div class="stage">
+    <div class="desk">
+      <div class="exp-card">
+        <h3 id="mode-title">Experiment: Direct (type &amp; arrow)</h3>
+        <p id="mode-desc"></p>
+        <div class="tasks" id="tasks"></div>
+        <div class="exp-row">
+          <button class="btn primary" id="open-btn2">Open Peek ▸</button>
+          <span style="font-size:11.5px;color:var(--page-dim)">Launch is an external experiment button — no fake Chrome hotkey.</span>
+        </div>
+      </div>
+
+      <div class="log">
+        <h3>Trial record <span style="font-weight:400;color:var(--page-dim);font-size:11px">(neutral log — no speed/quality judgment)</span></h3>
+        <table id="log-table"><thead><tr><th>#</th><th>Variant</th><th>Task</th><th>Keys</th><th>Result</th><th>= target</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="6" class="empty">No trials yet. Pick a task, Open Peek, and commit or cancel.</td></tr></tbody></table>
+      </div>
+    </div>
+
+    <div class="sim">
+      <div class="simhead"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:6px">Simulated Chrome — the real browser never changes</span></div>
+      <div class="simbody">
+        <div class="simtab current" id="sim-current"><span class="lbl">Active</span><div class="t"><div class="tt"></div><div class="uu"></div></div></div>
+        <div class="simtab" id="sim-previous"><span class="lbl">Previous</span><div class="t"><div class="tt"></div><div class="uu"></div></div></div>
+        <div class="lastact" id="last-action">Peek closed. Opening will preselect the <b>Previous</b> tab (not Active).</div>
+        <div class="disclaim">“Previous” = the previous <b>distinct</b> tab viewed before the current one. Opening preselects Previous; highlighting never switches; opening the already-Active tab is a no-op that keeps history; commit sets Active and pushes old Active to Previous; cancel keeps Active. All simulated.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Peek overlay -->
+  <div class="scrim-overlay" id="overlay">
+    <div class="palette" role="dialog" aria-label="Peek (simulated)">
+      <div class="searchbar">
+        <svg class="glass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="q" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search tabs…" />
+        <span class="modepill" id="modepill" style="display:none">SELECTION</span>
+        <span class="count" id="count"></span>
+      </div>
+      <div class="scenetag" id="scenetag"></div>
+      <div class="list" id="list"></div>
+      <div class="hintbar" id="hintbar">
+        <span><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↑</kbd>/<kbd>↓</kbd> move</span>·
+        <span><kbd>1</kbd>–<kbd>9</kbd> open numbered</span>·
+        <span><kbd>Enter</kbd> open highlighted</span>·
+        <span><kbd>i</kbd> back to typing</span>·
+        <span><kbd>Esc</kbd> cancel</span>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ===== DISCOVERY PROTOTYPE · PEEK-5 keyboard feel ===== */
+
+/* ---- illustrative favicons (monograms, NOT brand assets) ---- */
+function fav(kind){
+  const M={gh:'#24292f',ghpr:'#1f6feb',ghis:'#3fb950',ghdc:'#8957e5',sheet:'#188038',doc:'#1a73e8',
+    linear:'#5e6ad2',figma:'#a259ff',notion:'#111111',so:'#f48024',mdn:'#000000',local:'#3a3f4b'};
+  const T={gh:'gh',ghpr:'PR',ghis:'!',ghdc:'#',sheet:'▦',doc:'≡',linear:'L',figma:'F',notion:'N',so:'S',mdn:'M',local:'λ'};
+  const el=document.createElement('span');el.className='fav';el.style.background=M[kind]||'#4b5563';
+  el.textContent=T[kind]||'•';el.title='illustrative favicon';return el;
+}
+
+/* ---- fixture: SAME synthetic 30 tabs as PEEK-8 (identical order) ---- */
+const F=[
+ {icon:'ghpr',title:'Fix flaky retry in scheduler',dom:'github.com',path:'acme-labs/orion/pull/2481',kind:'PR #2481'},
+ {icon:'ghpr',title:'Fix flaky websocket reconnect test',dom:'github.com',path:'acme-labs/orion/pull/2478',kind:'PR #2478'},
+ {icon:'ghis',title:'Scheduler drops jobs under load',dom:'github.com',path:'acme-labs/orion/issues/2455',kind:'Issue #2455'},
+ {icon:'ghis',title:'Flaky test: scheduler retry backoff',dom:'github.com',path:'acme-labs/orion/issues/2460',kind:'Issue #2460'},
+ {icon:'ghpr',title:'Bump orion to v3.2 and update deps',dom:'github.com',path:'acme-labs/orion/pull/2490',kind:'PR #2490'},
+ {icon:'gh',title:'acme-labs/orion',dom:'github.com',path:'acme-labs/orion',kind:'Repository'},
+ {icon:'ghis',title:'Atlas: memory leak in tile cache',dom:'github.com',path:'acme-labs/atlas/issues/1207',kind:'Issue #1207'},
+ {icon:'ghpr',title:'Cache eviction for tile store',dom:'github.com',path:'acme-labs/atlas/pull/1210',kind:'PR #1210'},
+ {icon:'ghpr',title:'Fix flaky retry in uploader',dom:'github.com',path:'acme-labs/atlas/pull/1188',kind:'PR #1188'},
+ {icon:'ghpr',title:'Refactor auth middleware',dom:'github.com',path:'nimbus/pulse/pull/874',kind:'PR #874'},
+ {icon:'ghpr',title:'Refactor auth middleware (part 2)',dom:'github.com',path:'nimbus/pulse/pull/880',kind:'PR #880'},
+ {icon:'ghis',title:'Auth token refresh race condition',dom:'github.com',path:'nimbus/pulse/issues/869',kind:'Issue #869'},
+ {icon:'ghdc',title:'RFC: unify auth middleware',dom:'github.com',path:'nimbus/pulse/discussions/71',kind:'Discussion'},
+ {icon:'ghpr',title:'Add idempotency keys to payments',dom:'github.com',path:'orbit-hq/ledger/pull/333',kind:'PR #333'},
+ {icon:'ghis',title:'Duplicate charge on retry',dom:'github.com',path:'orbit-hq/ledger/issues/330',kind:'Issue #330'},
+ {icon:'ghpr',title:'Fix flaky payment webhook test',dom:'github.com',path:'orbit-hq/ledger/pull/341',kind:'PR #341'},
+ {icon:'ghis',title:'Beacon: dark mode contrast fixes',dom:'github.com',path:'vela/beacon/issues/55',kind:'Issue #55'},
+ {icon:'ghpr',title:'Dark mode contrast fixes for beacon',dom:'github.com',path:'vela/beacon/pull/58',kind:'PR #58'},
+ {icon:'gh',title:'CI · orion — run #2481 failing',dom:'github.com',path:'acme-labs/orion/actions/runs/2481',kind:'Actions'},
+ {icon:'gh',title:'Notifications',dom:'github.com',path:'notifications?query=is:unread',kind:'Inbox'},
+ {icon:'sheet',title:'Q3 revenue forecast v4',dom:'docs.google.com',path:'spreadsheets/d/1a9…kQ/edit',kind:'Google Sheets'},
+ {icon:'sheet',title:'Hiring pipeline tracker',dom:'docs.google.com',path:'spreadsheets/d/1f2…Xm/edit',kind:'Google Sheets'},
+ {icon:'doc',title:'Orion incident postmortem',dom:'docs.google.com',path:'document/d/1z7…Pq/edit',kind:'Google Docs'},
+ {icon:'doc',title:'Peek — product discovery',dom:'docs.google.com',path:'document/d/1c4…Vt/edit',kind:'Google Docs'},
+ {icon:'linear',title:'PEEK-8 Which result layout is clearest',dom:'linear.app',path:'camb/issue/PEEK-8',kind:'Linear'},
+ {icon:'figma',title:'Peek — palette explorations',dom:'figma.com',path:'file/2Kd…/Peek-explorations',kind:'Figma'},
+ {icon:'notion',title:'Eng weekly notes',dom:'notion.so',path:'camb/Eng-weekly-9f3c…',kind:'Notion'},
+ {icon:'so',title:'Query all tabs across Chrome windows',dom:'stackoverflow.com',path:'questions/12345678',kind:'Stack Overflow'},
+ {icon:'mdn',title:'chrome.tabs.query() — reference',dom:'developer.mozilla.org',path:'…/API/chrome.tabs/query',kind:'MDN'},
+ {icon:'local',title:'Vite + Peek dev server',dom:'localhost:5173',path:'/popup/index.html',kind:'Localhost'}
+];
+// synthetic duplicate used only by the "hiring pipeline" scenario (labelled)
+const SYN_HIRING={icon:'sheet',title:'Hiring pipeline tracker',dom:'docs.google.com',path:'spreadsheets/d/7q4…Bn/edit',kind:'Google Sheets',syn:true};
+
+/* ---- fixed precomputed scenarios (order = PEEK-3 acceptance examples; NOT a live matcher) ---- */
+const SCEN={
+ 'orion retry':{rows:[0,3,8,5,4]},
+ 'orion':{rows:[5,18,4,22,2,0]},
+ 'github auth 880':{rows:[10,9,11,12]},
+ 'sched rtry':{rows:[3,0,2,8]},
+ 'hiring pipeline':{rows:[SYN_HIRING,21]},
+ 'outage':{rows:[]}
+};
+function norm(s){return s.trim().toLowerCase().replace(/\s+/g,' ');}
+function resolve(q){
+  const n=norm(q);
+  if(n==='') return {rows:F.slice(),mode:'all'};
+  if(SCEN[n]) return {rows:SCEN[n].rows.map(r=>typeof r==='number'?F[r]:r),mode:'scenario'};
+  // approximate free-play filter (labelled): every token must appear in title+url
+  const toks=n.split(' ');
+  const rows=F.filter(t=>{const hay=(t.title+' '+t.dom+'/'+t.path).toLowerCase();return toks.every(k=>hay.includes(k));});
+  return {rows,mode:'approx'};
+}
+
+/* ---- state ---- */
+const html=document.documentElement;
+let variant='direct';          // 'direct' | 'selection'
+let open=false;
+let interaction='typing';       // 'typing' | 'selecting'
+let rows=[], hi=0, composing=false;
+let current=F[9], previous=F[24];   // initial: Active = a PR, Previous = the Linear PEEK-8 tab (different)
+let activeTask=null, keyCount=0, trialNo=0;
+
+const MODES={
+  direct:{title:'Experiment: Direct (type &amp; arrow)',
+    desc:'Input stays ready the whole time. ↑/↓ move the highlight while you keep typing; Enter opens the highlighted tab; Esc cancels. Numbers type into the query normally. There is no separate mode.'},
+  selection:{title:'Experiment: Selection mode',
+    desc:'Type first. Press Esc to leave typing and enter Selection mode (Esc again cancels). Then j/k or ↑/↓ move, 1–9 open a numbered visible result, Enter opens the highlighted one, and i returns to typing. Numbers type normally while typing.'}
+};
+const TASKS=[
+ {n:1,html:'<b>Return to the tab you just left.</b> <span class="tgt">Open Peek and commit the pre-highlighted Previous tab.</span>',target:()=>previous,suggest:''},
+ {n:2,html:'<b>Find the Orion scheduler-retry PR.</b> <span class="tgt">Type <code>orion retry</code>, open “Fix flaky retry in scheduler”.</span>',target:()=>F[0],suggest:'orion retry'},
+ {n:3,html:'<b>Jump to PR #880.</b> <span class="tgt">Type <code>github auth 880</code>, open the top result.</span>',target:()=>F[10],suggest:'github auth 880'}
+];
+
+/* ---- rendering ---- */
+const listEl=document.getElementById('list'), countEl=document.getElementById('count'),
+  sceneEl=document.getElementById('scenetag'), qEl=document.getElementById('q'),
+  overlay=document.getElementById('overlay'), pill=document.getElementById('modepill');
+
+function urlNode(t){
+  const w=document.createElement('span');w.className='url';
+  const d=document.createElement('span');d.className='dom';d.textContent=t.dom;
+  const s=document.createElement('span');s.className='sep';s.textContent='/';
+  const p=document.createElement('span');p.className='path';p.textContent=t.path;
+  w.append(d,s,p);return w;
+}
+function render(){
+  listEl.innerHTML='';
+  listEl.classList.toggle('selecting', variant==='selection' && interaction==='selecting');
+  if(rows.length===0){
+    const e=document.createElement('div');e.className='emptyrow';
+    e.textContent = norm(qEl.value)==='' ? 'No tabs.' : 'No matching tab — title/URL only, no page-content or semantic guessing.';
+    listEl.append(e);
+  }else{
+    rows.forEach((t,i)=>{
+      const r=document.createElement('div');r.className='row'+(i===hi?' sel':'');
+      const b=document.createElement('span');b.className='badge';b.textContent=(i+1);
+      const stack=document.createElement('div');stack.className='stack';
+      const l1=document.createElement('div');l1.className='line1';
+      const ti=document.createElement('span');ti.className='title';ti.textContent=t.title;
+      if(t.syn){const sy=document.createElement('span');sy.className='syn';sy.textContent='synthetic dup';ti.append(sy);}
+      const k=document.createElement('span');k.className='kind';k.textContent=t.kind;
+      l1.append(ti,k);
+      stack.append(l1,urlNode(t));
+      r.append(b,fav(t.icon),stack);
+      r.addEventListener('mousemove',()=>{ if(hi!==i){hi=i;paintHi();} });
+      r.addEventListener('click',()=>commit(i)); // mouse commit allowed; highlight-move alone never commits
+      listEl.append(r);
+    });
+  }
+  countEl.textContent = rows.length+' '+(rows.length===1?'tab':'tabs');
+  const rz=resolve(qEl.value);
+  sceneEl.innerHTML = rz.mode==='scenario' ? 'Scripted scenario · fixed order from acceptance examples'
+    : rz.mode==='approx' ? '<em>Approximate filter — free play only, NOT ranking</em>'
+    : 'All open tabs · Previous preselected';
+  pill.style.display = (variant==='selection' && interaction==='selecting') ? 'inline-block':'none';
+  ensureVisible();
+}
+function paintHi(){[...listEl.children].forEach((c,i)=>c.classList && c.classList.toggle('sel', i===hi)); ensureVisible();}
+function ensureVisible(){const el=listEl.children[hi]; if(el&&el.scrollIntoView) el.scrollIntoView({block:'nearest'});}
+
+function recompute(preselectPrevious){
+  const rz=resolve(qEl.value); rows=rz.rows;
+  if(preselectPrevious){ const idx=rows.indexOf(previous); hi = idx>=0?idx:0; }
+  else { hi=0; }   // query change → highlight strongest match (top)
+  render();
+}
+
+/* ---- open / commit / cancel ---- */
+function openPeek(){
+  open=true; html.dataset.open='1'; interaction='typing';
+  qEl.value=''; keyCount=0;
+  recompute(true);                     // preselect PREVIOUS, not current
+  qEl.readOnly=false;
+  setTimeout(()=>qEl.focus(),0);
+  setLast('Peek open · <b>'+previous.title+'</b> preselected (Previous). Highlighting won’t switch tabs.');
+}
+function closePeek(){ open=false; html.dataset.open='0'; interaction='typing'; }
+function sameTab(a,b){ return !!a&&!!b&&a.title===b.title&&a.dom===b.dom&&a.path===b.path; }
+function commit(i){
+  if(i<0||i>=rows.length) return;
+  const chosen=rows[i];
+  if(sameTab(chosen,current)){
+    // No-op activation: the chosen tab is already Active. Do NOT overwrite Previous,
+    // otherwise Active and Previous collapse and "return to previous" breaks.
+    logTrial(chosen,false);
+    setLast('Opened <b>'+chosen.title+'</b> — already Active; history unchanged.');
+    closePeek();
+    return;
+  }
+  const oldCurrent=current;
+  current=chosen; previous=oldCurrent;   // commit: Active←chosen, Previous←old Active
+  paintSim();
+  logTrial(chosen,false);
+  setLast('Committed <b>'+chosen.title+'</b> → now Active. Old Active → Previous.');
+  closePeek();
+}
+function cancel(){
+  logTrial(null,true);
+  setLast('Canceled — Active tab unchanged (<b>'+current.title+'</b>).');
+  closePeek();
+}
+
+/* ---- keyboard state machine (only while open; never touches page/meta shortcuts) ---- */
+document.addEventListener('keydown',e=>{
+  if(!open) return;
+  if(e.metaKey||e.ctrlKey||e.altKey) return;      // never capture browser/OS chords
+  if(composing||e.isComposing) return;            // respect IME composition
+  const k=e.key;
+  keyCount++;
+  if(variant==='direct'){
+    if(k==='ArrowDown'){hi=Math.min(hi+1,rows.length-1);paintHi();e.preventDefault();}
+    else if(k==='ArrowUp'){hi=Math.max(hi-1,0);paintHi();e.preventDefault();}
+    else if(k==='Enter'){commit(hi);e.preventDefault();}
+    else if(k==='Escape'){cancel();e.preventDefault();}
+    // everything else (incl. digits) falls through to the input = normal typing
+    else { keyCount--; } // don't count plain typing keystrokes as nav; input 'input' handler counts edits
+    return;
+  }
+  // selection variant
+  if(interaction==='typing'){
+    if(k==='ArrowDown'){hi=Math.min(hi+1,rows.length-1);paintHi();e.preventDefault();}
+    else if(k==='ArrowUp'){hi=Math.max(hi-1,0);paintHi();e.preventDefault();}
+    else if(k==='Enter'){commit(hi);e.preventDefault();}
+    else if(k==='Escape'){ interaction='selecting'; qEl.readOnly=true; qEl.blur(); render(); e.preventDefault(); setLast('Selection mode · j/k move, 1–9 open, i to type, Esc cancels.'); }
+    else { keyCount--; }   // plain typing
+    return;
+  }
+  // interaction === 'selecting'
+  if(k==='j'||k==='ArrowDown'){hi=Math.min(hi+1,rows.length-1);paintHi();e.preventDefault();}
+  else if(k==='k'||k==='ArrowUp'){hi=Math.max(hi-1,0);paintHi();e.preventDefault();}
+  else if(/^[1-9]$/.test(k)){ const idx=parseInt(k,10)-1; if(idx<rows.length&&idx<9) commit(idx); e.preventDefault(); }
+  else if(k==='Enter'){commit(hi);e.preventDefault();}
+  else if(k==='i'){ interaction='typing'; qEl.readOnly=false; render(); setTimeout(()=>qEl.focus(),0); e.preventDefault(); setLast('Typing mode.'); }
+  else if(k==='Escape'){ cancel(); e.preventDefault(); }
+  else { e.preventDefault(); }   // swallow stray keys so nothing leaks to the page while selecting
+});
+qEl.addEventListener('compositionstart',()=>composing=true);
+qEl.addEventListener('compositionend',()=>composing=false);
+qEl.addEventListener('input',()=>{ keyCount++; recompute(false); });
+
+/* ---- simulated Chrome + log ---- */
+function paintSim(){
+  const set=(id,t)=>{const el=document.getElementById(id);el.querySelector('.tt').textContent=t.title;
+    el.querySelector('.uu').textContent=t.dom+'/'+t.path;};
+  set('sim-current',current); set('sim-previous',previous);
+}
+function setLast(h){document.getElementById('last-action').innerHTML=h;}
+function logTrial(chosen,canceled){
+  trialNo++;
+  const body=document.getElementById('log-body');
+  if(body.querySelector('.empty')) body.innerHTML='';
+  const tr=document.createElement('tr');
+  const tgt=activeTask?activeTask.target():null;
+  const eq = (!canceled && tgt && chosen && chosen.title===tgt.title && chosen.path===tgt.path);
+  tr.innerHTML='<td class="num">'+trialNo+'</td>'+
+    '<td>'+(variant==='direct'?'Direct':'Selection')+'</td>'+
+    '<td>'+(activeTask?('Task '+activeTask.n):'free')+'</td>'+
+    '<td class="num">'+keyCount+'</td>'+
+    '<td>'+(canceled?'<span style="color:var(--warn)">canceled</span>':escapeHtml(chosen.title))+'</td>'+
+    '<td>'+(canceled?'—':(activeTask?(eq?'<span style="color:var(--ok)">yes</span>':'no'):'—'))+'</td>';
+  body.prepend(tr);
+}
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+/* ---- controls ---- */
+function setVariant(v){
+  variant=v; html.dataset.variant=v;
+  document.querySelectorAll('#variant-seg button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.variantVal===v)));
+  document.getElementById('mode-title').innerHTML=MODES[v].title;
+  document.getElementById('mode-desc').innerHTML=MODES[v].desc;
+  if(open){ interaction='typing'; qEl.readOnly=false; render(); }
+}
+document.getElementById('variant-seg').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setVariant(b.dataset.variantVal);});
+document.getElementById('theme-seg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  html.dataset.theme=b.dataset.themeVal;document.querySelectorAll('#theme-seg button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.themeVal===b.dataset.themeVal)));});
+document.getElementById('open-btn').addEventListener('click',openPeek);
+document.getElementById('open-btn2').addEventListener('click',openPeek);
+document.getElementById('reset-btn').addEventListener('click',()=>{current=F[9];previous=F[24];paintSim();setLast('States reset. Active and Previous restored.');});
+overlay.addEventListener('mousedown',e=>{ if(e.target===overlay) cancel(); });  // focus-loss / click-outside cancels
+
+/* ---- tasks ---- */
+const tasksEl=document.getElementById('tasks');
+TASKS.forEach(t=>{
+  const el=document.createElement('button');el.className='task';el.dataset.n=t.n;
+  el.innerHTML='<span class="n">'+t.n+'</span><span class="tx">'+t.html+'</span>';
+  el.addEventListener('click',()=>{
+    activeTask=(activeTask&&activeTask.n===t.n)?null:t;
+    document.querySelectorAll('.task').forEach(x=>x.classList.toggle('active', activeTask&&x.dataset.n==String(activeTask.n)));
+    setLast(activeTask?('Task '+t.n+' selected. Open Peek to attempt it.'):'Task cleared.');
+  });
+  tasksEl.append(el);
+});
+
+/* ---- init ---- */
+setVariant('direct'); paintSim();
+</script>
+</body>
+</html>

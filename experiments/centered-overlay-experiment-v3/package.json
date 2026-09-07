@@ -1,0 +1,23 @@
+{
+  "name": "peek-centered-overlay-experiment",
+  "version": "0.0.0-experiment",
+  "private": true,
+  "type": "module",
+  "description": "Disposable MV3 in-page overlay proving test for Peek discovery.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "build": "node build.mjs",
+    "verify:boundaries": "node scripts/verify-boundaries.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run verify:boundaries"
+  },
+  "dependencies": {
+    "effect": "3.22.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.2.9",
+    "@types/node": "26.4.1",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

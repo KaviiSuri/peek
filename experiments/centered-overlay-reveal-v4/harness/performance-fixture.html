@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Overlay performance fixture</title></head>
+<body>
+  <button id="prior">Prior focus</button>
+  <script>
+    (() => {
+      const hostId = "peek-centered-overlay-experiment-host";
+      const scriptUrl = new URL("../dist/unpacked/overlay.js", location.href).href;
+      const listeners = [];
+      const model = {
+        currentTabId: 1,
+        previousTabId: 2,
+        historyAvailable: true,
+        tabs: Array.from({ length: 30 }, (_, index) => ({
+          id: index + 1,
+          windowId: index < 15 ? 1 : 2,
+          title: `Fixture tab ${index + 1} Orion scheduler retry`,
+          url: `https://fixture.test/repo/orion/issues/${index + 1}`,
+          active: index === 0,
+          lastAccessed: 1000 - index
+        }))
+      };
+      let active = null;
+      const originalFocus = HTMLInputElement.prototype.focus;
+      HTMLInputElement.prototype.focus = function (...args) {
+        if (active && active.inputFocusAt === undefined) active.inputFocusAt = performance.now();
+        return originalFocus.apply(this, args);
+      };
+      globalThis.chrome.runtime = {
+        onMessage: {
+          addListener(listener) { listeners.push(listener); },
+          removeListener(listener) {
+            const index = listeners.indexOf(listener);
+            if (index >= 0) listeners.splice(index, 1);
+          }
+        },
+        async sendMessage(message) {
+          if (message.type === "peek-centered-overlay:get-model") {
+            active.modelRequestAt = performance.now();
+            // Keep the local bridge deterministic. Real worker/message latency is a separate span.
+            await Promise.resolve();
+            active.modelResponseAt = performance.now();
+            return { ok: true, model };
+          }
+          return { ok: true };
+        }
+      };
+      new MutationObserver(() => {
+        if (active && active.hostMountedAt === undefined && document.getElementById(hostId)) {
+          active.hostMountedAt = performance.now();
+        }
+      }).observe(document.documentElement, { childList: true });
+
+      const nextPaintOpportunity = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now())))
+      );
+      const waitFor = async (predicate, label) => {
+        const deadline = performance.now() + 2000;
+        while (!predicate()) {
+          if (performance.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+      };
+      const injectBuiltScript = () => new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = scriptUrl;
+        script.onload = () => resolve(performance.now());
+        script.onerror = () => reject(new Error("built overlay script failed to load"));
+        document.head.append(script);
+      });
+      async function invoke(label) {
+        document.getElementById("prior").focus();
+        performance.clearResourceTimings();
+        active = { label, startAt: performance.now(), fontsStatusAtStart: document.fonts.status };
+        const scriptLoadCompleteAt = await injectBuiltScript();
+        active.scriptLoadCompleteAt = scriptLoadCompleteAt;
+        await waitFor(() => active.inputFocusAt !== undefined, "input focus");
+        await document.fonts.ready;
+        active.fontsReadyAt = performance.now();
+        active.paintOpportunityAt = await nextPaintOpportunity();
+        const resource = performance.getEntriesByName(scriptUrl).at(-1);
+        const start = active.startAt;
+        const result = {
+          label,
+          hostMountedMs: active.hostMountedAt - start,
+          scriptLoadAndEvalMs: active.scriptLoadCompleteAt - start,
+          modelRequestMs: active.modelRequestAt - start,
+          modelRoundtripMs: active.modelResponseAt - active.modelRequestAt,
+          inputFocusedMs: active.inputFocusAt - start,
+          fontsReadyMs: active.fontsReadyAt - start,
+          secondRafMs: active.paintOpportunityAt - start,
+          resourceDurationMs: resource?.duration ?? null,
+          transferSize: resource?.transferSize ?? null,
+          encodedBodySize: resource?.encodedBodySize ?? null,
+          fontsStatusAtStart: active.fontsStatusAtStart
+        };
+        active = null;
+        return result;
+      }
+      async function toggleOff() {
+        await injectBuiltScript();
+        await waitFor(() => document.getElementById(hostId) === null, "overlay removal");
+      }
+      globalThis.__runPerformancePair = async () => {
+        const first = await invoke("fresh-document-first");
+        await toggleOff();
+        const sameDocument = await invoke("same-document-reopen");
+        return { first, sameDocument };
+      };
+    })();
+  </script>
+  <script>
+    addEventListener("load", async () => {
+      try {
+        const result = await globalThis.__runPerformancePair();
+        parent.postMessage({ type: "peek-perf-result", sample: Number(new URL(location.href).searchParams.get("sample")), result }, "*");
+      } catch (error) {
+        parent.postMessage({ type: "peek-perf-error", error: String(error) }, "*");
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# Peek first-release spec synthesis (documents only)
+
+Continue Pi GPT-5.6 Sol medium child. Read /Users/kavii-suri/.agents/skills/to-spec/SKILL.md and current PEEK map + all resolved decision comments. User wants autonomous routine synthesis, no further interviewing or prototype polishing. No code/build/browser/install/production work. This is a NEW document task, not restarting stopped browser investigation.
+
+Parent reviewed first-release-acceptance.md and adopts it with corrections below. Update acceptance and derive a self-contained first-release-spec.md under own BB_THREAD_STORAGE. Attach both to PEEK-7; parent publishes spec task. Do not independently create/close tasks, broaden scope or ask questions. Publish only artifact/comment.
+
+Correct precision:
+- Chrome is original stated target. Dia is user's actual test browser/evidence. Do NOT promise all Chromium browsers or silently treat Dia compatibility as Chrome proof. Chrome required verification; Dia observed behavior preserved as evidence, supported-browser expansion not invented.
+- Separate user-confirmed decisions from OWNER DEFAULTS even if both operationally accepted. Cross-window previous tracking semantics, no-op details, Shift+Tab handling, case normalization, URL-number example and fallback failure handling include derived/default details, not each explicitly user-confirmed. Use contract vs provenance columns or distinct sections. No need to ask user to ratify every routine default.
+- Click-away cannot promise active window never changes if user intentionally clicks another window. Cancellation performs NO tab/window activation itself; don't override user's external focus change to force old window. Restore prior page focus only when appropriate in current context. Preserve global browser keybindings.
+- Previous unavailable on first install need not add settings/warnings: choose sensible eligible non-current fallback highlight when available, no invented previous history; last current fallback only if no other tabs. Clearly mark as owner default. Do not create clutter to report ephemeral history.
+- Empty-state ordering can default MRU after known previous preselection, document owner default, don't leave routine deterministic ordering absent.
+- Remove contradiction 'all repeated tabs distinguishable' vs accepted opaque duplicate limitation.
+- Stable loading composition is an acceptable owner implementation option; user confirmed no distracting empty-shell construction flash, not a mandated algorithm.
+- Scope fallback to restricted/non-injectable browser surfaces, not arbitrary errors. Correct error states without silently masking defects.
+
+Spec follows to-spec sections: Problem Statement, Solution, numbered User Stories covering agreed scope only (no padded new features), Implementation Decisions (settled responsibilities and minimal Effect direction; no unselected framework/bundler/RC inference), Testing Decisions, Out of Scope, Further Notes. No specific code snippets or speculative file paths. Prior art Poof module boundaries and production-shaped tests. Highest useful behavior checks: invoke->query->navigate->commit/cancel through browser adapter; pure matcher scenarios; real-browser focus and restricted fallback. No extra user checkpoint on routine seams: mark testing approach owner default and preserve acceptance authority.
+
+Cite evidence via task keys/titles and absolute artifact paths/links; keep canonical resolutions in ticket comments, spec is synthesis not another competing map. Include no production implementation exists, throwaway prototypes not production foundation; actual false-start issues learned (custom command vs action, empty-shell flash) with proof limits, not root-cause overclaims. Known verification gates in checklist not new open discovery questions. Real keyboard conflict checks, permissions, accessibility, Chrome and Dia evidence boundaries, 30-tab normal + 100-tab test fixture (owner-selected stress input), no arbitrary performance thresholds or claims of tests passing production.
+
+Future release candidates history/bookmarks/recently closed/navigation/actions/auto-folders and semantic search stay recorded outside v0 without promising every candidate. Minimal Effect direction settled; exact production dependency/UI/build choices remain implementation choices to verify, not unauthorized new product decisions. No native companion or persistent host grant.
+
+Return concise audit that document is self-contained and provenance accurate, precise remaining implementation gates, and artifacts. Fix only docs in own storage; project git broken, don't repair/write repo. No new questionnaire. Async.
