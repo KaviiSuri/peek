@@ -5,7 +5,14 @@ import type { BackgroundApp } from "../src/background/app";
 function setup() {
   let actionListener: ((tab: chrome.tabs.Tab) => void) | undefined;
   let messageListener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean | undefined) | undefined;
+  let activatedListener: ((info: chrome.tabs.OnActivatedInfo) => void) | undefined;
+  let removedListener: ((tabId: number) => void) | undefined;
+  let focusedListener: ((windowId: number) => void) | undefined;
   const app: BackgroundApp = {
+    start: vi.fn(),
+    observeTabActivation: vi.fn(),
+    observeWindowFocus: vi.fn(),
+    removeTabFromAttention: vi.fn(),
     invoke: vi.fn(async () => ({ sessionId: "s", model: { status: "ready" as const, tabs: [] } })),
     commit: vi.fn(async () => ({ ok: true as const })),
     cancel: vi.fn(),
@@ -13,8 +20,18 @@ function setup() {
   registerBackground({
     onActionClicked: { addListener(listener) { actionListener = listener; } },
     onMessage: { addListener(listener) { messageListener = listener as typeof messageListener; } },
+    onTabActivated: { addListener(listener) { activatedListener = listener; } },
+    onTabRemoved: { addListener(listener) { removedListener = listener as (tabId: number) => void; } },
+    onWindowFocusChanged: { addListener(listener) { focusedListener = listener; } },
   }, app);
-  return { app, actionListener: () => actionListener!, messageListener: () => messageListener! };
+  return {
+    app,
+    actionListener: () => actionListener!,
+    messageListener: () => messageListener!,
+    activatedListener: () => activatedListener!,
+    removedListener: () => removedListener!,
+    focusedListener: () => focusedListener!,
+  };
 }
 
 describe("synchronous MV3 wiring", () => {
@@ -22,12 +39,25 @@ describe("synchronous MV3 wiring", () => {
     const wired = setup();
     expect(wired.actionListener()).toBeTypeOf("function");
     expect(wired.messageListener()).toBeTypeOf("function");
+    expect(wired.activatedListener()).toBeTypeOf("function");
+    expect(wired.removedListener()).toBeTypeOf("function");
+    expect(wired.focusedListener()).toBeTypeOf("function");
   });
 
   it("routes the action click used by both the icon and reserved _execute_action command", () => {
     const wired = setup();
     wired.actionListener()({ id: 7, windowId: 8, incognito: false } as chrome.tabs.Tab);
     expect(wired.app.invoke).toHaveBeenCalledWith({ id: 7, windowId: 8 });
+  });
+
+  it("routes attention events through the synchronously registered owners", () => {
+    const wired = setup();
+    wired.activatedListener()({ tabId: 7, windowId: 8 });
+    wired.focusedListener()(9);
+    wired.removedListener()(10);
+    expect(wired.app.observeTabActivation).toHaveBeenCalledWith(7, 8);
+    expect(wired.app.observeWindowFocus).toHaveBeenCalledWith(9);
+    expect(wired.app.removeTabFromAttention).toHaveBeenCalledWith(10);
   });
 
   it("decodes commit messages and keeps malformed messages outside the app", () => {

@@ -8,6 +8,7 @@ export interface PeekTab {
   readonly favIconUrl?: string | undefined;
   readonly lastAccessed: number;
   readonly current: boolean;
+  readonly previous?: boolean | undefined;
 }
 
 export interface PeekModel {
@@ -24,6 +25,7 @@ const TabSchema = Schema.Struct({
   favIconUrl: Schema.optional(Schema.String),
   lastAccessed: Schema.Number,
   current: Schema.Boolean,
+  previous: Schema.optional(Schema.Boolean),
 });
 
 const ModelSchema = Schema.Struct({

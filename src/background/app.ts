@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import { createAttentionTracker } from "../attention/attention";
 import type { BrowserAdapter, InvocationResult, SourceTab } from "./browser-adapter";
 import type { CancelMessage, CommitMessage, PeekModel } from "../shared/model";
 
@@ -22,6 +23,10 @@ function boundary<A>(operation: string, run: () => Promise<A>): Effect.Effect<A,
 }
 
 export interface BackgroundApp {
+  start(): void;
+  observeTabActivation(tabId: number, windowId: number): void;
+  observeWindowFocus(windowId: number): void;
+  removeTabFromAttention(tabId: number): void;
   invoke(source: SourceTab): Promise<InvocationResult>;
   commit(message: CommitMessage, senderTabId: number | undefined): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }>;
   cancel(message: CancelMessage, senderTabId: number | undefined): void;
@@ -29,8 +34,21 @@ export interface BackgroundApp {
 
 export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
   const sessions = new Map<string, Session>();
+  const attention = createAttentionTracker(browser);
 
   return {
+    start() {
+      attention.start();
+    },
+    observeTabActivation(tabId, windowId) {
+      attention.observeActivation(tabId, windowId);
+    },
+    observeWindowFocus(windowId) {
+      attention.observeWindowFocus(windowId);
+    },
+    removeTabFromAttention(tabId) {
+      attention.removeTab(tabId);
+    },
     async invoke(source) {
       for (const [id, session] of sessions) {
         if (session.source.id === source.id) sessions.delete(id);
@@ -54,7 +72,8 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
       let model: PeekModel;
       try {
         const tabs = await Effect.runPromise(boundary("list tabs", () => browser.listEligibleTabs(source)));
-        model = { status: "ready", tabs };
+        const preparedTabs = await Effect.runPromise(boundary("prepare attention", () => attention.prepareTabs(source, tabs)));
+        model = { status: "ready", tabs: preparedTabs };
       } catch {
         model = {
           status: "error",

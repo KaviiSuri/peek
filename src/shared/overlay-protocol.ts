@@ -12,7 +12,8 @@ function tab(value: unknown): value is PeekTab {
     && typeof value.url === "string"
     && (value.favIconUrl === undefined || typeof value.favIconUrl === "string")
     && typeof value.lastAccessed === "number"
-    && typeof value.current === "boolean";
+    && typeof value.current === "boolean"
+    && (value.previous === undefined || typeof value.previous === "boolean");
 }
 
 function model(value: unknown): value is PeekModel {

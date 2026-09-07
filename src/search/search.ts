@@ -40,6 +40,7 @@ export function searchTabs(tabs: readonly PeekTab[], query: string): PeekTab[] {
 
   return ranked.sort((left, right) => {
     if (right.score !== left.score) return right.score - left.score;
+    if (!query.trim() && left.tab.previous !== right.tab.previous) return left.tab.previous ? -1 : 1;
     if (!query.trim() && left.tab.current !== right.tab.current) return left.tab.current ? 1 : -1;
     if (right.tab.lastAccessed !== left.tab.lastAccessed) return right.tab.lastAccessed - left.tab.lastAccessed;
     return left.tab.id - right.tab.id;

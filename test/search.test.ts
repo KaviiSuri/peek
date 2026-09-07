@@ -19,6 +19,11 @@ describe("searchTabs", () => {
     expect(searchTabs(tabs, "").map((tab) => tab.id)).toEqual([4, 3, 2, 1]);
   });
 
+  it("puts a trustworthy previous distinct tab before newer MRU candidates", () => {
+    const withPrevious = tabs.map((tab) => ({ ...tab, previous: tab.id === 2 }));
+    expect(searchTabs(withPrevious, "").map((tab) => tab.id)).toEqual([2, 4, 3, 1]);
+  });
+
   it("does not infer words absent from title and URL", () => {
     expect(searchTabs(tabs, "outage")).toEqual([]);
   });

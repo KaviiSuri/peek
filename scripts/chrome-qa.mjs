@@ -166,6 +166,19 @@ async function capture(client, sessionId, name) {
   return path;
 }
 
+async function selectedOverlayTabId(client, sessionId) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  let selectedId;
+  const visit = (node) => {
+    const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+    if (attributes["aria-selected"] === "true" && attributes.id?.startsWith("peek-tab-")) selectedId = Number(attributes.id.slice("peek-tab-".length));
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  return selectedId;
+}
+
 async function measureOverlay(client, sessionId) {
   const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   const nodes = [];
@@ -318,18 +331,44 @@ async function main() {
     }
     const firstReady = await overlayReady;
     const firstCharacterTiming = await firstCharacter;
-    const firstOverlay = await waitFor("first query character", async () => {
-      const nodes = await axTree(client, sourceSession);
+    let firstOverlay;
+    try {
+      firstOverlay = await waitFor("first query character", async () => {
+        const nodes = await axTree(client, sourceSession);
+        const combobox = axRole(nodes, "combobox")[0];
+        return combobox?.value?.value === "o" ? { nodes, combobox } : undefined;
+      });
+    } catch (error) {
+      const nodes = await axTree(client, sourceSession).catch(() => []);
       const combobox = axRole(nodes, "combobox")[0];
-      return combobox?.value?.value === "o" ? { nodes, combobox } : undefined;
-    });
+      const pageState = await client.send("Runtime.evaluate", {
+        expression: "({activeTag:document.activeElement?.tagName,activeId:document.activeElement?.id,priorInputValue:document.querySelector('#prior-focus')?.value,peekHostPresent:document.querySelector('#peek-extension-host')!==null})",
+        returnByValue: true,
+      }, sourceSession).catch(() => undefined);
+      const diagnostics = {
+        actionRequestToCdpResponseMs: Number((actionResponseAt - actionRequestedAt).toFixed(2)),
+        overlayObservedSinceActionRequestMs: Number(firstReady.elapsedMs.toFixed(2)),
+        firstCharacterTiming: {
+          requestedSinceActionMs: Number(firstCharacterTiming.requestedSinceActionMs.toFixed(2)),
+          completedSinceActionMs: Number(firstCharacterTiming.completedSinceActionMs.toFixed(2)),
+        },
+        overlayComboboxValue: combobox?.value?.value,
+        overlayComboboxFocused: combobox?.properties?.some((property) => property.name === "focused" && property.value?.value === true),
+        pageState: pageState?.result?.value,
+        interpretation: "The retained 50 ms insertion request is unchanged. If priorInputValue contains the character while the combobox does not, the fixed probe preceded overlay focus; this is a readiness observation, not a universal 50 ms product SLA.",
+      };
+      await capture(client, sourceSession, "01-first-character-failure.png").catch(() => undefined);
+      await writeFile(resolve(output, "first-character-failure.json"), `${JSON.stringify(diagnostics, null, 2)}\n`);
+      throw new Error(`${error instanceof Error ? error.message : String(error)}; diagnostics: ${resolve(output, "first-character-failure.json")}`);
+    }
     const query = firstOverlay.value.combobox.value.value;
     const overlayObservedSinceActionRequestMs = firstReady.elapsedMs;
 
     const worker = await waitFor("Peek service worker", async () =>
       (await targets(client)).find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)),
     );
-    const workerSession = await attach(client, worker.value.targetId);
+    let workerTargetId = worker.value.targetId;
+    let workerSession = await attach(client, workerTargetId);
     const evalWorker = async (expression) => {
       const result = await client.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, workerSession);
       if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
@@ -341,6 +380,11 @@ async function main() {
 
     const stateExpression = `Promise.all([chrome.windows.getAll({populate:true}),chrome.windows.getLastFocused({populate:true})]).then(([windows,last])=>({lastFocusedWindowId:last.id,windows:windows.map(w=>({id:w.id,focused:w.focused,type:w.type,incognito:w.incognito,tabs:(w.tabs||[]).map(t=>({id:t.id,active:t.active,title:t.title,url:t.url}))}))}))`;
     const browserState = () => evalWorker(stateExpression);
+    const attentionState = () => evalWorker("chrome.storage.session.get('peekAttentionV1').then(value=>value.peekAttentionV1)");
+    const waitForAttention = (label, predicate) => waitFor(label, async () => {
+      const state = await attentionState();
+      return predicate(state) ? state : undefined;
+    });
     const sourceState = await browserState();
     const sourceChromeTab = sourceState.windows.flatMap((window) => window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === sourceUrl);
     assert(sourceChromeTab, "Source Chrome tab was not found");
@@ -486,6 +530,89 @@ async function main() {
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
+    // PEEK-12: exercise observed attention across two real Chrome windows.
+    const attentionEvidence = {};
+    const attentionBaseline = await browserState();
+    const orionChromeTab = attentionBaseline.windows.flatMap((window) => window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === orionUrl);
+    assert(orionChromeTab, "Orion Chrome tab was not found for attention QA");
+    await evalWorker(`chrome.tabs.update(${orionChromeTab.id},{active:true}).then(()=>chrome.windows.update(${orionChromeTab.windowId},{focused:true}))`);
+    await waitForAttention("Orion focused attention", (state) => state?.current?.tabId === orionChromeTab.id);
+    await focusSource();
+    const sourceAttention = await waitForAttention("source current and Orion previous", (state) => state?.current?.tabId === sourceChromeTab.id && state?.previous?.tabId === orionChromeTab.id);
+
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    const previousSelectedTabId = await selectedOverlayTabId(client, sourceSession);
+    assert(previousSelectedTabId === orionChromeTab.id, `Expected previous Orion tab ${orionChromeTab.id} selected, got ${previousSelectedTabId}`);
+    await capture(client, sourceSession, "08-previous-selected-two-window.png");
+    await press(client, sourceSession, "Enter");
+    await waitForOverlayClosed(client, sourceSession);
+    const returnedAttention = await waitForAttention("open Enter returned to previous", (state) => state?.current?.tabId === orionChromeTab.id && state?.previous?.tabId === sourceChromeTab.id);
+
+    const orionSession = await attach(client, orionPage.targetId);
+    await client.send("Page.enable", {}, orionSession);
+    await client.send("Accessibility.enable", {}, orionSession);
+    const beforeCurrentNoOp = await attentionState();
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targetByUrl(client, "tab", "/orion-retry.html")).targetId });
+    await waitForOverlay(client, orionSession);
+    await client.send("Input.insertText", { text: "orion" }, orionSession);
+    await press(client, orionSession, "Enter");
+    await waitForOverlayClosed(client, orionSession);
+    const afterCurrentNoOp = await attentionState();
+    assert(JSON.stringify(afterCurrentNoOp) === JSON.stringify(beforeCurrentNoOp), "Current-target no-op destroyed previous attention");
+
+    const backgroundUrl = `${atlasUrl}?background-attention=${Date.now()}`;
+    const backgroundTab = await evalWorker(`chrome.tabs.create({windowId:${sourceChromeTab.windowId},url:${JSON.stringify(backgroundUrl)},active:true})`);
+    const backgroundPage = await waitFor("background-window active page", async () => (await targets(client)).find((target) => target.type === "page" && target.url === backgroundUrl));
+    const backgroundSession = await attach(client, backgroundPage.value.targetId);
+    await client.send("Page.enable", {}, backgroundSession);
+    await client.send("Accessibility.enable", {}, backgroundSession);
+    await delay(100);
+    const afterBackgroundActivation = await attentionState();
+    assert(JSON.stringify(afterBackgroundActivation) === JSON.stringify(afterCurrentNoOp), "Activation in an unfocused window was incorrectly recorded as viewed");
+    await evalWorker(`chrome.windows.update(${sourceChromeTab.windowId},{focused:true})`);
+    const afterBackgroundFocus = await waitForAttention("background tab observed on focus", (state) => state?.current?.tabId === backgroundTab.id && state?.previous?.tabId === orionChromeTab.id);
+
+    await evalWorker(`chrome.tabs.remove(${orionChromeTab.id})`);
+    const afterPreviousRemoval = await waitForAttention("removed previous reconciled", (state) => state?.current?.tabId === backgroundTab.id && state?.previous === undefined);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targets(client, "tab")).find((target) => target.url === backgroundUrl).targetId });
+    await waitForOverlay(client, backgroundSession);
+    const missingHistorySelectedTabId = await selectedOverlayTabId(client, backgroundSession);
+    assert(missingHistorySelectedTabId !== undefined && missingHistorySelectedTabId !== backgroundTab.id, "Missing history did not select an eligible non-current MRU tab");
+    await press(client, backgroundSession, "Escape");
+    await waitForOverlayClosed(client, backgroundSession);
+
+    // Establish source -> background, stop the worker, and verify session restoration owns initial selection.
+    await focusSource();
+    await waitForAttention("source attention before cold restart", (state) => state?.current?.tabId === sourceChromeTab.id);
+    await evalWorker(`chrome.tabs.update(${backgroundTab.id},{active:true}).then(()=>chrome.windows.update(${backgroundTab.windowId},{focused:true}))`);
+    const beforeWorkerStop = await waitForAttention("known previous before worker stop", (state) => state?.current?.tabId === backgroundTab.id && state?.previous?.tabId === sourceChromeTab.id);
+    await client.send("Target.closeTarget", { targetId: workerTargetId });
+    await waitFor("Peek worker stopped", async () => !(await targets(client)).some((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)));
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targets(client, "tab")).find((target) => target.url === backgroundUrl).targetId });
+    await waitForOverlay(client, backgroundSession, 10000);
+    const restartedWorker = await waitFor("restarted Peek service worker", async () =>
+      (await targets(client)).find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)),
+    );
+    workerTargetId = restartedWorker.value.targetId;
+    workerSession = await attach(client, workerTargetId);
+    const afterWorkerRestart = await attentionState();
+    const coldSelectedTabId = await selectedOverlayTabId(client, backgroundSession);
+    assert(coldSelectedTabId === sourceChromeTab.id, `Cold worker selected ${coldSelectedTabId}, expected previous source ${sourceChromeTab.id}`);
+    await capture(client, backgroundSession, "09-cold-worker-previous-selected.png");
+    await press(client, backgroundSession, "Escape");
+    await waitForOverlayClosed(client, backgroundSession);
+
+    Object.assign(attentionEvidence, {
+      sourceAttention: sourceAttention.value,
+      previousSelection: { currentTabId: sourceChromeTab.id, previousTabId: orionChromeTab.id, selectedTabId: previousSelectedTabId },
+      openEnterReturn: returnedAttention.value,
+      currentNoOp: { before: beforeCurrentNoOp, after: afterCurrentNoOp },
+      backgroundWindowActivation: { before: afterCurrentNoOp, afterActivation: afterBackgroundActivation, afterFocus: afterBackgroundFocus.value, activatedTabId: backgroundTab.id },
+      removedPrevious: { state: afterPreviousRemoval.value, selectedFallbackTabId: missingHistorySelectedTabId },
+      coldWorker: { beforeStop: beforeWorkerStop.value, afterRestart: afterWorkerRestart, selectedTabId: coldSelectedTabId, stoppedTargetId: worker.value.targetId, restartedTargetId: workerTargetId },
+    });
+
     let physicalKeyboardShortcutInvocation = "unverified: rerun with PEEK_QA_NATIVE_SHORTCUT=1 or PEEK_QA_MANUAL_SHORTCUT=1";
     let nativeShortcutTarget;
     if (process.env.PEEK_QA_NATIVE_SHORTCUT === "1" || process.env.PEEK_QA_MANUAL_SHORTCUT === "1") {
@@ -518,7 +645,7 @@ async function main() {
       }
       const nativeNodes = await axTree(client, nativeSession);
       assert(axRole(nativeNodes, "combobox")[0]?.properties?.some((property) => property.name === "focused" && property.value?.value === true), "Physical shortcut did not focus the Peek input on the fresh tab");
-      await capture(client, nativeSession, "08-physical-shortcut-fresh-tab.png");
+      await capture(client, nativeSession, "10-physical-shortcut-fresh-tab.png");
       await press(client, nativeSession, "Escape");
     }
 
@@ -545,6 +672,7 @@ async function main() {
         revealSamples,
         samplingLimit: "Sequential Page.captureScreenshot calls are timestamped around each capture. They are not paint timestamps and are not labelled as nominal milliseconds or a true first-frame filmstrip.",
       },
+      attention: attentionEvidence,
       centering: {
         before: {
           buildSha: "c9ad0ea152925c1855c3edf1ceceb7bfd4aae6fc",
@@ -562,6 +690,11 @@ async function main() {
         coherentRevealSamples: "captured with actual sequential capture intervals and explicit sampling limits",
         firstCharacter: "pass; request/completion offsets recorded without claiming paint-time delivery",
         stableLoadingReadyErrorGeometry: "pass at normal, 480x720 narrow and 900x240 short viewports",
+        previousDistinctTwoWindow: "pass: exact current/previous/selected IDs recorded and open-Enter returned to previous",
+        currentNoOpPreservesPrevious: "pass: exact attention state unchanged",
+        backgroundWindowActivationIgnoredUntilFocus: "pass: exact state unchanged until containing window focused",
+        removedPreviousFallback: "pass: removed ID purged and a non-current MRU tab selected",
+        coldWorkerSessionRestore: "pass: service worker target stopped, restarted, and previous exact ID selected",
         pendingCommitEscape: "pass with real Chrome key events while the extension worker was paused; focused input stayed operable and active-tab identities were preserved",
         titleUrlFilter: "pass",
         crossWindowExactCommitAndFocus: "pass",
