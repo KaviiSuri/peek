@@ -259,6 +259,7 @@ describe("ordinary-page overlay", () => {
     expect(input.readOnly).toBe(true);
     expect(input.value).toBe("orion 2481");
     expect(root.querySelector(".mode")?.textContent).toContain("Select");
+    input.setSelectionRange(0, 0, "none");
 
     expect(keydown(input, "Tab").defaultPrevented).toBe(true);
     expect(root.querySelector<HTMLElement>(".palette")?.dataset.mode).toBe("typing");
@@ -268,6 +269,25 @@ describe("ordinary-page overlay", () => {
     expect(input.selectionEnd).toBe(9);
     expect(input.selectionDirection).toBe("backward");
     expect(root.activeElement).toBe(input);
+  });
+
+  it("leaves j/k and digit keydowns as ordinary unprevented input while typing", async () => {
+    const before = sent.length;
+    const { root, input } = openOverlay("session-typing-keys");
+    const initialSelected = root.querySelector<HTMLElement>('[aria-selected="true"]')?.id;
+
+    expect(keydown(input, "j").defaultPrevented).toBe(false);
+    expect(keydown(input, "k").defaultPrevented).toBe(false);
+    expect(keydown(input, "2").defaultPrevented).toBe(false);
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe(initialSelected);
+    expect(sent.slice(before)).toEqual([]);
+
+    input.value = "j2";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "j2", inputType: "insertText" }));
+    expect(input.value).toBe("j2");
+    expect(root.textContent).toContain("No matching tabs");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([]);
   });
 
   it("routes j/k, arrows and visible numeric choices through real DOM events without activating on highlight", async () => {
@@ -340,6 +360,41 @@ describe("ordinary-page overlay", () => {
     expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-visible-digits", targetTabId: 1, targetWindowId: 1 }]);
   });
 
+  it("keeps displayed digits and numeric actions coherent across resize races", async () => {
+    const before = sent.length;
+    const { root, input } = openOverlay("session-resize-digits");
+    let listBottom = 56;
+    const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("results")) return { top: 0, bottom: listBottom, height: listBottom } as DOMRect;
+      if (this.getAttribute("role") === "option") {
+        const index = this.id === "peek-tab-2" ? 0 : 1;
+        return { top: index * 56, bottom: (index + 1) * 56, height: 56 } as DOMRect;
+      }
+      return { top: 0, bottom: 0, height: 0 } as DOMRect;
+    });
+
+    keydown(input, "Tab");
+    expect(Array.from(root.querySelectorAll(".digit"), (badge) => badge.textContent)).toEqual(["1"]);
+    listBottom = 112;
+    keydown(input, "2");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([]);
+
+    window.dispatchEvent(new Event("resize"));
+    expect(Array.from(root.querySelectorAll(".digit"), (badge) => badge.textContent)).toEqual(["1", "2"]);
+    listBottom = 56;
+    keydown(input, "2");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([]);
+
+    listBottom = 112;
+    window.dispatchEvent(new Event("resize"));
+    keydown(input, "2");
+    await Promise.resolve();
+    expect(sent.slice(before)).toEqual([{ kind: "peek/commit", sessionId: "session-resize-digits", targetTabId: 1, targetWindowId: 1 }]);
+    geometry.mockRestore();
+  });
+
   it("leaves modified chords unowned instead of treating them as selection commands", () => {
     const before = sent.length;
     const { input } = openOverlay("session-modified-keys");
@@ -381,6 +436,45 @@ describe("ordinary-page overlay", () => {
     expect(root.activeElement).toBe(input);
     expect(input.selectionStart).toBe(1);
     expect(input.selectionEnd).toBe(1);
+  });
+
+  it("cancels after Shift+Tab focus exit without restoring over the new destination and cleans listeners", async () => {
+    vi.useFakeTimers();
+    const addSpy = vi.spyOn(window, "addEventListener");
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    const prior = document.createElement("button");
+    document.body.append(prior);
+    prior.focus();
+    const before = sent.length;
+    const { host, input } = openOverlay("session-shift-tab-exit");
+    const resizeListener = addSpy.mock.calls.find(([type]) => type === "resize")?.[1];
+
+    const shiftTab = keydown(input, "Tab", { shiftKey: true });
+    expect(shiftTab.defaultPrevented).toBe(false);
+    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: prior }));
+    prior.focus();
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+
+    expect(host.isConnected).toBe(false);
+    expect(document.activeElement).toBe(prior);
+    expect(sent.slice(before)).toEqual([{ kind: "peek/cancel", sessionId: "session-shift-tab-exit" }]);
+    expect(removeSpy).toHaveBeenCalledWith("resize", resizeListener);
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("does not let a superseded session inherit a pending focus-exit cancellation", async () => {
+    vi.useFakeTimers();
+    const first = openOverlay("session-focus-old");
+    first.input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    const next = openOverlay("session-focus-new");
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(next.host.isConnected).toBe(true);
+    expect(document.querySelector("#peek-extension-host")).toBe(next.host);
+    vi.useRealTimers();
   });
 
   it("clears selectable results after a commit error so hidden rows cannot navigate or recommit", async () => {

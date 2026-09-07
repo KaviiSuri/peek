@@ -229,7 +229,7 @@ async function waitForOverlayClosed(client, sessionId) {
 }
 
 async function press(client, sessionId, key, code = key, modifiers = 0) {
-  const keyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowDown: 40, ArrowUp: 38, j: 74, k: 75, " ": 32 }[key] ?? key.toUpperCase().charCodeAt(0);
+  const keyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowLeft: 37, ArrowDown: 40, ArrowUp: 38, j: 74, k: 75, " ": 32 }[key] ?? key.toUpperCase().charCodeAt(0);
   await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
   await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
 }
@@ -294,6 +294,24 @@ async function setOverlaySelection(client, sessionId, start, end, direction) {
     functionDeclaration: "function(start,end,direction){this.setSelectionRange(start,end,direction)}",
     arguments: [{ value: start }, { value: end }, { value: direction }],
   }, sessionId);
+}
+
+async function overlayDigitRows(client, sessionId) {
+  const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+  const attributes = (node) => Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+  const text = (node) => `${node.nodeValue ?? ""}${(node.children ?? []).map(text).join("")}`;
+  const rows = [];
+  const visit = (node) => {
+    const attrs = attributes(node);
+    if (attrs.role === "option" && attrs.id?.startsWith("peek-tab-")) {
+      const digit = (node.children ?? []).find((child) => attributes(child).class?.split(/\s+/).includes("digit"));
+      rows.push({ id: Number(attrs.id.slice("peek-tab-".length)), digit: digit ? text(digit) : undefined });
+    }
+    for (const child of node.children ?? []) visit(child);
+    for (const shadow of node.shadowRoots ?? []) visit(shadow);
+  };
+  visit(document.root);
+  return rows;
 }
 
 async function selectedOverlayTabId(client, sessionId) {
@@ -782,6 +800,47 @@ async function main() {
     const siteShortcut = await client.send("Runtime.evaluate", { expression: "document.querySelector('p').textContent", returnByValue: true }, sourceSession);
     assert(siteShortcut.result.value === "Site shortcut received", "Closed-Peek site shortcut did not reach the page");
 
+    // PEEK-22 review boundaries: focus exit cancels without reversal; resize refreshes displayed choices.
+    const beforeShiftTab = await browserState();
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "Shift+Tab first delivered selection");
+    await press(client, sourceSession, "Tab", "Tab", 8);
+    await waitForOverlayClosed(client, sourceSession);
+    const shiftTabDestination = await client.send("Runtime.evaluate", { expression: "document.activeElement?.id", returnByValue: true }, sourceSession);
+    const afterShiftTab = await browserState();
+    assert(shiftTabDestination.result.value === "prior-focus", `Shift+Tab destination was ${JSON.stringify(shiftTabDestination.result.value)}, expected prior-focus`);
+    assert(afterShiftTab.lastFocusedWindowId === beforeShiftTab.lastFocusedWindowId && sameActiveTabs(afterShiftTab, beforeShiftTab), "Shift+Tab focus-exit cancellation changed browser tab/window attention");
+
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 200, deviceScaleFactor: 1, mobile: false }, sourceSession);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
+    await waitForOverlay(client, sourceSession);
+    await waitForSelectedOverlayTabId(client, sourceSession, "resize first delivered selection");
+    await press(client, sourceSession, "Tab");
+    const shortDigitRows = await waitFor("one readable short-viewport digit", async () => {
+      const rows = await overlayDigitRows(client, sourceSession);
+      return rows.filter((row) => row.digit).length === 1 ? rows : undefined;
+    });
+    await capture(client, sourceSession, "14-selection-short-one-digit.png");
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 720, deviceScaleFactor: 1, mobile: false }, sourceSession);
+    const expandedDigitRows = await waitFor("expanded viewport digit refresh", async () => {
+      const rows = await overlayDigitRows(client, sourceSession);
+      return rows[1]?.digit === "2" ? rows : undefined;
+    });
+    await capture(client, sourceSession, "15-selection-expanded-digits.png");
+    const resizedNumericTargetId = expandedDigitRows.value[1].id;
+    await press(client, sourceSession, "2", "Digit2");
+    await waitForOverlayClosed(client, sourceSession);
+    const resizedCommitState = await browserState();
+    const resizedFocusedWindow = resizedCommitState.windows.find((window) => window.id === resizedCommitState.lastFocusedWindowId);
+    assert(resizedFocusedWindow?.tabs.some((tab) => tab.active && tab.id === resizedNumericTargetId), "Resized digit 2 did not commit its displayed second row");
+    await client.send("Emulation.clearDeviceMetricsOverride", {}, sourceSession);
+    await focusSource();
+    const reviewBoundaryEvidence = {
+      shiftTab: { before: activeTabIdentity(beforeShiftTab), after: activeTabIdentity(afterShiftTab), destinationId: shiftTabDestination.result.value, overlayClosed: true },
+      resize: { shortDigitRows: shortDigitRows.value, expandedDigitRows: expandedDigitRows.value, committedTabId: resizedNumericTargetId },
+    };
+
     // PEEK-14: production keyboard mode, exact caret, visible digits and browser composition routes.
     await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
     await waitForOverlay(client, sourceSession);
@@ -792,6 +851,10 @@ async function main() {
     await press(client, sourceSession, "Tab");
     const selectingState = await overlayInputState(client, sourceSession);
     assert(selectingState.mode === "selection" && selectingState.readOnly === true && selectingState.value === "source2", "Tab did not enter selection mode without changing the digit-bearing query");
+    await setOverlaySelection(client, sourceSession, 0, 0, "none");
+    await press(client, sourceSession, "ArrowLeft");
+    const disturbedSelectionState = await overlayInputState(client, sourceSession);
+    assert(disturbedSelectionState.selectionStart === 0 && disturbedSelectionState.selectionEnd === 0, "Selection-mode caret disturbance was not established");
     await press(client, sourceSession, "j", "KeyJ");
     await press(client, sourceSession, "Tab");
     const restoredTypingState = await overlayInputState(client, sourceSession);
@@ -838,6 +901,7 @@ async function main() {
     const keyboardEvidence = {
       typingBeforeSelection,
       selectingState,
+      disturbedSelectionState,
       restoredTypingState,
       visibleKeyboardIds: visibleKeyboardIds.value,
       selectedAfterJ,
@@ -986,9 +1050,12 @@ async function main() {
       await client.send("Accessibility.enable", {}, nativeSession);
       const absentHost = await client.send("Runtime.evaluate", { expression: "document.querySelector('#peek-extension-host') === null", returnByValue: true }, nativeSession);
       assert(absentHost.result.value === true, "Fresh native-shortcut tab was already injected before physical invocation");
-      const stateWithNativeTab = await browserState();
-      const nativeChromeTab = stateWithNativeTab.windows.flatMap((window) => window.tabs.map((tab) => ({ ...tab, windowId: window.id }))).find((tab) => tab.url === nativeSourceUrl);
-      assert(nativeChromeTab, "Fresh native-shortcut Chrome tab was not found");
+      const nativeTabReady = await waitFor("fresh native-shortcut tab enumeration", async () => {
+        const state = await browserState();
+        const tab = state.windows.flatMap((window) => window.tabs.map((candidate) => ({ ...candidate, windowId: window.id }))).find((candidate) => candidate.url === nativeSourceUrl);
+        return tab ? { state, tab } : undefined;
+      }, 10000);
+      const nativeChromeTab = nativeTabReady.value.tab;
       await evalWorker(`chrome.tabs.update(${nativeChromeTab.id},{active:true}).then(()=>chrome.windows.update(${nativeChromeTab.windowId},{focused:true}))`);
       await client.send("Target.activateTarget", { targetId: nativePage.value.targetId });
       await client.send("Page.bringToFront", {}, nativeSession);
@@ -1037,6 +1104,7 @@ async function main() {
       attention: attentionEvidence,
       search: searchEvidence,
       keyboard: keyboardEvidence,
+      reviewBoundaries: reviewBoundaryEvidence,
       centering: {
         before: {
           buildSha: "c9ad0ea152925c1855c3edf1ceceb7bfd4aae6fc",
@@ -1072,6 +1140,8 @@ async function main() {
         typingSelectionModeRoundTrip: "pass: digit-bearing query and exact backward selection range restored",
         selectionNavigationAndVisibleDigitCommit: "pass: j/k selected displayed rows and digit 2 committed the exact second displayed row",
         browserCompositionGuard: "pass through branded-Chrome CDP Input.imeSetComposition; physical OS IME candidate UI remains an explicit evidence limit",
+        shiftTabFocusExit: "pass: overlay cancelled while the source prior-focus destination and browser tab/window attention were preserved",
+        resizeDigitCoherence: "pass: short viewport exposed one digit, expanded viewport refreshed the second label, and digit 2 committed that displayed row",
         lightDarkNarrowShortScreenshots: "captured",
         physicalKeyboardShortcutInvocation,
       },

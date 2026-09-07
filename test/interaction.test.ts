@@ -4,7 +4,9 @@ import {
   highlightedTab,
   initialInteraction,
   moveHighlight,
+  navigationDeltaForKey,
   returnToTypingMode,
+  selectionDigit,
   setQuery,
   visibleChoiceForDigit,
 } from "../src/interaction/interaction";
@@ -45,6 +47,18 @@ describe("interaction", () => {
 
     expect(selecting).toMatchObject({ mode: "selection", query: "orion 2481", typingSelection: selection });
     expect(returnToTypingMode(selecting)).toMatchObject({ mode: "typing", query: "orion 2481", typingSelection: selection });
+  });
+
+  it("enables j/k and numeric interpretation only in selection mode", () => {
+    const typing = initialInteraction(tabs);
+    const selecting = enterSelectionMode(typing, typing.typingSelection);
+    expect(navigationDeltaForKey(typing, "j")).toBeUndefined();
+    expect(navigationDeltaForKey(typing, "k")).toBeUndefined();
+    expect(selectionDigit(typing, "2")).toBeUndefined();
+    expect(navigationDeltaForKey(selecting, "j")).toBe(1);
+    expect(navigationDeltaForKey(selecting, "k")).toBe(-1);
+    expect(selectionDigit(selecting, "2")).toBe("2");
+    expect(navigationDeltaForKey(typing, "ArrowDown")).toBe(1);
   });
 
   it("maps only digits 1–9 to the corresponding supplied visible choice", () => {

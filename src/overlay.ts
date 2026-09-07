@@ -3,9 +3,10 @@ import {
   highlightedTab,
   initialInteraction,
   moveHighlight,
+  navigationDeltaForKey,
   returnToTypingMode,
+  selectionDigit,
   setQuery,
-  visibleChoiceForDigit,
   type InteractionState,
   type TextSelection,
 } from "./interaction/interaction";
@@ -98,9 +99,12 @@ function createOverlayController(): OverlayController {
   let host: HTMLElement | undefined;
   let priorFocus: HTMLElement | null = null;
   let applyModel: ((model: PeekModel) => void) | undefined;
+  let disposeSessionListeners: (() => void) | undefined;
   const closedSessions = new Set<string>();
 
   function teardown(restoreFocus: boolean): void {
+    disposeSessionListeners?.();
+    disposeSessionListeners = undefined;
     host?.remove();
     host = undefined;
     activeSessionId = undefined;
@@ -109,11 +113,11 @@ function createOverlayController(): OverlayController {
     priorFocus = null;
   }
 
-  function cancel(): void {
+  function cancel(restoreFocus = true): void {
     const sessionId = activeSessionId;
     if (!sessionId) return;
     closedSessions.add(sessionId);
-    teardown(true);
+    teardown(restoreFocus);
     void chrome.runtime.sendMessage({ kind: "peek/cancel", sessionId }).catch(() => undefined);
   }
 
@@ -172,6 +176,7 @@ function createOverlayController(): OverlayController {
       let state: InteractionState = initialInteraction(results);
       let committing = false;
       let composing = false;
+      let focusExitTimer: ReturnType<typeof setTimeout> | undefined;
 
       function stateItem(titleText: string, detailText: string): HTMLLIElement {
         const item = document.createElement("li");
@@ -347,18 +352,24 @@ function createOverlayController(): OverlayController {
           return;
         }
         if (model.status !== "ready" || modified) return;
-        const navigationKey = event.key === "ArrowDown" || event.key === "ArrowUp" ||
-          (state.mode === "selection" && (event.key.toLocaleLowerCase() === "j" || event.key.toLocaleLowerCase() === "k"));
-        if (navigationKey) {
+        const navigationDelta = navigationDeltaForKey(state, event.key);
+        if (navigationDelta !== undefined) {
           event.preventDefault();
-          const forwards = event.key === "ArrowDown" || event.key.toLocaleLowerCase() === "j";
-          state = moveHighlight(state, results, forwards ? 1 : -1);
+          state = moveHighlight(state, results, navigationDelta);
           render();
           return;
         }
-        if (state.mode === "selection") {
-          const visibleTabs = visibleRows().map((row) => results.find((tab) => row.id === `peek-tab-${tab.id}`)).filter((tab): tab is PeekTab => tab !== undefined);
-          const choice = visibleChoiceForDigit(visibleTabs, event.key);
+        const digit = selectionDigit(state, event.key);
+        if (digit !== undefined) {
+          const currentlyVisible = new Set(visibleRows());
+          const labelledRows = Array.from(list.querySelectorAll<HTMLElement>('[role="option"]')).filter((row) => {
+            const badge = row.querySelector<HTMLElement>(".digit");
+            return badge !== null && currentlyVisible.has(row);
+          });
+          const visibleTabs = labelledRows.map((row) => results.find((tab) => row.id === `peek-tab-${tab.id}`)).filter((tab): tab is PeekTab => tab !== undefined);
+          const displayedDigits = labelledRows.map((row) => row.querySelector<HTMLElement>(".digit")?.textContent ?? "");
+          const choiceIndex = displayedDigits.indexOf(digit);
+          const choice = choiceIndex < 0 ? undefined : visibleTabs[choiceIndex];
           if (choice) {
             event.preventDefault();
             void commit(choice);
@@ -371,6 +382,27 @@ function createOverlayController(): OverlayController {
         }
       });
       list.addEventListener("scroll", refreshVisibleDigits, { passive: true });
+      const clearFocusExit = () => {
+        if (focusExitTimer !== undefined) clearTimeout(focusExitTimer);
+        focusExitTimer = undefined;
+      };
+      const handleFocusIn = () => { clearFocusExit(); };
+      const handleFocusOut = () => {
+        clearFocusExit();
+        focusExitTimer = setTimeout(() => {
+          focusExitTimer = undefined;
+          if (host && shadow.activeElement === null) cancel(false);
+        }, 0);
+      };
+      window.addEventListener("resize", refreshVisibleDigits);
+      input.addEventListener("focusin", handleFocusIn);
+      input.addEventListener("focusout", handleFocusOut);
+      disposeSessionListeners = () => {
+        window.removeEventListener("resize", refreshVisibleDigits);
+        input.removeEventListener("focusin", handleFocusIn);
+        input.removeEventListener("focusout", handleFocusOut);
+        clearFocusExit();
+      };
       backdrop.addEventListener("pointerdown", (event) => {
         if (event.target === backdrop) cancel();
       });

@@ -34,6 +34,19 @@ export function returnToTypingMode(state: InteractionState): InteractionState {
   return { ...state, mode: "typing" };
 }
 
+export function navigationDeltaForKey(state: InteractionState, key: string): -1 | 1 | undefined {
+  if (key === "ArrowDown") return 1;
+  if (key === "ArrowUp") return -1;
+  if (state.mode !== "selection") return undefined;
+  if (key.toLocaleLowerCase() === "j") return 1;
+  if (key.toLocaleLowerCase() === "k") return -1;
+  return undefined;
+}
+
+export function selectionDigit(state: InteractionState, key: string): string | undefined {
+  return state.mode === "selection" && /^[1-9]$/.test(key) ? key : undefined;
+}
+
 export function visibleChoiceForDigit<T>(visibleChoices: readonly T[], key: string): T | undefined {
   if (!/^[1-9]$/.test(key)) return undefined;
   return visibleChoices[Number(key) - 1];
