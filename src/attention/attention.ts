@@ -84,15 +84,24 @@ export interface AttentionTracker {
 }
 
 export function createAttentionTracker(adapter: AttentionAdapter): AttentionTracker {
+  interface ObservationEvent {
+    readonly sequence: number;
+    readonly kind: "activation" | "focus";
+    status: "pending" | "resolved";
+    resolvedOrder?: number;
+    candidate?: AttentionIdentity;
+    promise: Promise<void>;
+  }
   type PendingEvent =
-    | { readonly sequence: number; readonly kind: "activation" | "focus"; status: "pending" | "resolved"; candidate?: AttentionIdentity; promise: Promise<void> }
-    | { readonly sequence: number; readonly kind: "remove"; readonly tabId: number; status: "resolved"; promise: Promise<void> }
-    | { readonly sequence: number; readonly kind: "barrier"; status: "resolved"; promise: Promise<void> };
+    | ObservationEvent
+    | { readonly sequence: number; readonly kind: "remove"; readonly tabId: number; readonly status: "resolved"; readonly resolvedOrder: number; readonly promise: Promise<void> }
+    | { readonly sequence: number; readonly kind: "barrier"; readonly status: "resolved"; readonly resolvedOrder: number; readonly promise: Promise<void> };
 
   let state: AttentionState = emptyState;
   let baseState: AttentionState = emptyState;
   let started = false;
   let sequence = 0;
+  let resolutionOrder = 0;
   let events: PendingEvent[] = [];
   let ready = Promise.resolve();
   let updates = Promise.resolve();
@@ -119,7 +128,8 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
       }
       if (event.kind === "barrier" || event.status === "pending" || !event.candidate) continue;
       const supersededFocus = event.kind === "focus" && events.some((later) =>
-        later.sequence > event.sequence && later.status === "resolved" &&
+        later.sequence > event.sequence && later.status === "resolved" && later.resolvedOrder !== undefined &&
+        event.resolvedOrder !== undefined && later.resolvedOrder < event.resolvedOrder &&
         (later.kind === "barrier" || ((later.kind === "activation" || later.kind === "focus") && later.candidate !== undefined)),
       );
       if (!supersededFocus) next = observeAttention(next, event.candidate);
@@ -133,13 +143,17 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
 
   const addObservation = (kind: "activation" | "focus", windowId: number, tabId?: number): void => {
     if (!started) start();
-    const event = { sequence: ++sequence, kind, status: "pending" as const, promise: Promise.resolve() } as PendingEvent & { candidate?: AttentionIdentity };
+    const event: ObservationEvent = { sequence: ++sequence, kind, status: "pending", promise: Promise.resolve() };
     events.push(event);
     event.promise = adapter.resolveFocusedAttention(windowId, tabId)
       .then((candidate) => {
         event.status = "resolved";
+        event.resolvedOrder = ++resolutionOrder;
         if (candidate) event.candidate = candidate;
-      }, () => { event.status = "resolved"; })
+      }, () => {
+        event.status = "resolved";
+        event.resolvedOrder = ++resolutionOrder;
+      })
       .then(() => recalculate());
   };
 
@@ -162,7 +176,7 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
     observeWindowFocus(windowId) {
       if (!started) start();
       if (windowId === WINDOW_ID_NONE) {
-        events.push({ sequence: ++sequence, kind: "barrier", status: "resolved", promise: Promise.resolve() });
+        events.push({ sequence: ++sequence, kind: "barrier", status: "resolved", resolvedOrder: ++resolutionOrder, promise: Promise.resolve() });
         void recalculate();
         return;
       }
@@ -170,7 +184,7 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
     },
     removeTab(tabId) {
       if (!started) start();
-      events.push({ sequence: ++sequence, kind: "remove", tabId, status: "resolved", promise: Promise.resolve() });
+      events.push({ sequence: ++sequence, kind: "remove", tabId, status: "resolved", resolvedOrder: ++resolutionOrder, promise: Promise.resolve() });
       void recalculate();
     },
     async prepareTabs(source, tabs) {
@@ -179,6 +193,7 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
         sequence: ++sequence,
         kind: "activation",
         status: "resolved",
+        resolvedOrder: ++resolutionOrder,
         candidate: { tabId: source.id, windowId: source.windowId },
         promise: Promise.resolve(),
       };

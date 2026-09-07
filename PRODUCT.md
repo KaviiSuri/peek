@@ -12,7 +12,7 @@ A keyboard-first Chrome tab finder. V0 does one complete job: find and explicitl
 - Reveal coherent initial content, preserve the first keystroke and avoid disruptive shortcut conflicts.
 - Use minimal Effect TS at browser/lifecycle boundaries, pure search/interaction and synchronous MV3 entrypoints. Remaining tooling choices belong to the first implementation ticket.
 
-Google Chrome is the target. Discovery testing in Dia is evidence about Dia only, not verified Chrome compatibility. Production implementation and release verification have not started.
+Google Chrome is the target. The initial ordinary-page production slice is implemented and verified in Chrome; remaining v0 slices and full release acceptance are pending. Discovery testing in Dia remains evidence about Dia only, not verified Chrome compatibility.
 
 ## Canonical documents
 

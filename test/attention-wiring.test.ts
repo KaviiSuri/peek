@@ -66,6 +66,43 @@ describe("registered attention event path", () => {
     }, 2)).resolves.toEqual({ ok: true });
   });
 
+  it("preserves sequentially resolved B to C focus history while restoration is pending", async () => {
+    const restore = deferred<unknown>();
+    let delivered: ModelMessage | undefined;
+    const adapter: BrowserAdapter = {
+      loadAttentionState: () => restore.promise,
+      async saveAttentionState() {},
+      async resolveFocusedAttention(windowId) { return windowId === 20 ? B : windowId === 30 ? { tabId: 3, windowId: 30 } : undefined; },
+      async listEligibleTabs() { return tabs.map((tab) => ({ ...tab, current: tab.id === 3 })); },
+      async openOverlay() {},
+      async updateOverlay(_sourceTabId, message) { delivered = message; },
+      async dismissOverlay() {},
+      async revalidateTarget(tabId, windowId) { return { id: tabId, windowId, current: tabId === 3 }; },
+      async activateTarget() {},
+    };
+    const app = createBackgroundApp(adapter);
+    let focused!: (windowId: number) => void;
+    registerBackground({
+      onActionClicked: { addListener() {} },
+      onMessage: { addListener() {} },
+      onTabActivated: { addListener() {} },
+      onTabRemoved: { addListener() {} },
+      onWindowFocusChanged: { addListener(listener) { focused = listener; } },
+    }, app);
+    app.start();
+
+    focused(20);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    focused(30);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    restore.resolve({ version: 1, current: { tabId: 1, windowId: 10 } });
+    await app.invoke({ id: 3, windowId: 30 });
+
+    const readyTabs = delivered?.model.tabs ?? [];
+    expect(readyTabs.find((tab) => tab.id === 2)?.previous).toBe(true);
+    expect(searchTabs(readyTabs, "")[0]?.id).toBe(2);
+  });
+
   it("current selection is a no-op and does not destroy the previous candidate", async () => {
     let stored: AttentionState = { version: 1, current: B, previous: A };
     const activateTarget = vi.fn();
