@@ -179,6 +179,13 @@ async function selectedOverlayTabId(client, sessionId) {
   return selectedId;
 }
 
+async function waitForSelectedOverlayTabId(client, sessionId, label) {
+  return (await waitFor(label, async () => {
+    const tabId = await selectedOverlayTabId(client, sessionId);
+    return tabId === undefined ? undefined : tabId;
+  })).value;
+}
+
 async function measureOverlay(client, sessionId) {
   const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   const nodes = [];
@@ -542,7 +549,7 @@ async function main() {
 
     await client.send("Extensions.triggerAction", { id: extensionId, targetId: sourceTab.targetId });
     await waitForOverlay(client, sourceSession);
-    const previousSelectedTabId = await selectedOverlayTabId(client, sourceSession);
+    const previousSelectedTabId = await waitForSelectedOverlayTabId(client, sourceSession, "initial selected tab after previous model delivery");
     assert(previousSelectedTabId === orionChromeTab.id, `Expected previous Orion tab ${orionChromeTab.id} selected, got ${previousSelectedTabId}`);
     await capture(client, sourceSession, "08-previous-selected-two-window.png");
     await press(client, sourceSession, "Enter");
@@ -577,7 +584,7 @@ async function main() {
     const afterPreviousRemoval = await waitForAttention("removed previous reconciled", (state) => state?.current?.tabId === backgroundTab.id && state?.previous === undefined);
     await client.send("Extensions.triggerAction", { id: extensionId, targetId: (await targets(client, "tab")).find((target) => target.url === backgroundUrl).targetId });
     await waitForOverlay(client, backgroundSession);
-    const missingHistorySelectedTabId = await selectedOverlayTabId(client, backgroundSession);
+    const missingHistorySelectedTabId = await waitForSelectedOverlayTabId(client, backgroundSession, "initial selected tab after missing-history model delivery");
     assert(missingHistorySelectedTabId !== undefined && missingHistorySelectedTabId !== backgroundTab.id, "Missing history did not select an eligible non-current MRU tab");
     await press(client, backgroundSession, "Escape");
     await waitForOverlayClosed(client, backgroundSession);
@@ -597,7 +604,7 @@ async function main() {
     workerTargetId = restartedWorker.value.targetId;
     workerSession = await attach(client, workerTargetId);
     const afterWorkerRestart = await attentionState();
-    const coldSelectedTabId = await selectedOverlayTabId(client, backgroundSession);
+    const coldSelectedTabId = await waitForSelectedOverlayTabId(client, backgroundSession, "initial selected tab after cold-worker model delivery");
     assert(coldSelectedTabId === sourceChromeTab.id, `Cold worker selected ${coldSelectedTabId}, expected previous source ${sourceChromeTab.id}`);
     await capture(client, backgroundSession, "09-cold-worker-previous-selected.png");
     await press(client, backgroundSession, "Escape");
