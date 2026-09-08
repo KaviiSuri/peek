@@ -126,8 +126,8 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
     observeTabActivation(tabId, windowId) {
       attention.observeActivation(tabId, windowId);
       for (const session of sessions.values()) {
-        if ((session.kind === "overlay" || session.presentationPhase === "pending") &&
-          (session.kind === "overlay" || !session.closingForCommit) && windowId === session.source.windowId && tabId !== session.source.id &&
+        if ((session.kind === "overlay" || session.presentationPhase === "pending" || session.committing) &&
+          windowId === session.source.windowId && tabId !== session.source.id &&
           tabId !== session.activatingTarget?.id) {
           void dismissSession(session).catch((error: unknown) => console.error("Peek source-departure cleanup failed", error));
         }
@@ -136,6 +136,7 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
     observeWindowFocus(windowId) {
       attention.observeWindowFocus(windowId);
       for (const session of sessions.values()) {
+        if (windowId !== session.expectedReturnWindowId) delete session.expectedReturnWindowId;
         if (windowId === session.surface?.windowId || windowId === session.activatingTarget?.windowId) continue;
         if (session.kind === "overlay" && windowId === session.source.windowId) continue;
         if (session.kind === "fallback" && session.closingForCommit && (windowId === session.source.windowId || windowId === session.closingTargetWindowId)) {

@@ -73,6 +73,40 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("fallback registered lifecycle", () => {
+  it.each(['source-return', 'source-tab', 'late-return', 'target-then-source'])('limits expected return authority: %s', async departure => {
+    const closeStarted = deferred<void>(), closeGate = deferred<void>(), activationStarted = deferred<void>(), activationGate = deferred<void>();
+    let focused = 91;
+    const activate = vi.fn(async () => { activationStarted.resolve(); await activationGate.promise; return { id: 2, windowId: 20 }; });
+    const focus = vi.fn(async (id: number) => { focused = id; });
+    vi.stubGlobal('chrome', {
+      tabs: { update: activate },
+      windows: {
+        remove: async () => { closeStarted.resolve(); await closeGate.promise; if (focused === 91) focused = 10; },
+        getLastFocused: async () => ({ id: focused, focused: true }), update: focus,
+      },
+    });
+    const f = setup({ dismissFallback: chromeBrowserAdapter.dismissFallback, activateTarget: chromeBrowserAdapter.activateTarget });
+    const { commit, identity } = await f.open();
+    const pending = f.runtime(commit, identity);
+    await closeStarted.promise;
+    if (departure === 'source-return' || departure === 'source-tab') {
+      focused = 10; f.windowFocus(10);
+      if (departure === 'source-tab') f.tabActivated({ tabId: 3, windowId: 10 });
+    }
+    closeGate.resolve();
+    if (departure === 'late-return' || departure === 'target-then-source') {
+      await activationStarted.promise;
+      if (departure === 'target-then-source') { focused = 20; f.windowFocus(20); }
+      focused = 10; f.windowFocus(10);
+    }
+    activationGate.resolve();
+    const cancelled = departure === 'source-tab' || departure === 'target-then-source';
+    expect(await pending).toEqual(cancelled ? { ok: false, error: 'Peek session expired.' } : { ok: true });
+    expect(focused).toBe(cancelled ? 10 : 20);
+    if (cancelled) expect(focus).not.toHaveBeenCalled();
+    if (departure === 'source-tab') expect(activate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['overlay', 30], ['overlay', -1], ['fallback', 30], ['fallback', -1],
   ] as const)('honors observed departure during %s teardown acknowledgement: %s', async (kind, departure) => {
