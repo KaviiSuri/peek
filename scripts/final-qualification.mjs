@@ -252,6 +252,7 @@ export async function qualify(c) {
       await client.send('Tracing.start', { categories: 'disabled-by-default-devtools.screenshot', transferMode: 'ReturnAsStream' });
       const visual = await open(kind);
       await waitFor('workload ready', async () => (await overlayResultTabIds(client, visual.session)).length >= count);
+      await finishTrace();
       for (const scheme of ['light', 'dark']) {
         await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] }, visual.session);
         for (const query of ['github', 'docs', 'orion retry', 'outage']) {
@@ -266,6 +267,7 @@ export async function qualify(c) {
           }) });
         }
       }
+      async function finishTrace() {
       const tracingComplete = new Promise(resolveTrace => {
         const remove = client.on('Tracing.tracingComplete', event => { remove(); resolveTrace(event); });
       });
@@ -282,6 +284,7 @@ export async function qualify(c) {
       const snapshots = JSON.parse(traceText).traceEvents.filter(event => event.name === 'Screenshot' && event.args?.snapshot);
       for (const [i, event] of snapshots.entries()) await writeFile(resolve(output, `trace-frame-${count}-${kind}-${i}.jpg`), Buffer.from(event.args.snapshot, 'base64'));
       report.visuals.push({ count, kind, browserTrace: `trace-${count}-${kind}.json`, screenshotEvents: snapshots.map(({ ts, pid, tid }) => ({ ts, pid, tid })), limit: 'Browser tracing started before gesture; screenshot trace events use Chrome monotonic microseconds. Inspect captured content; screenshot sampling may omit frames.' });
+      }
       await close(visual);
       await save();
       for (const temperature of ['warm', 'natural-idle']) {
