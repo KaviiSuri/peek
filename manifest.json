@@ -3,7 +3,7 @@
   "name": "Peek",
   "version": "0.1.0",
   "description": "Find and explicitly switch to an open tab by title or URL.",
-  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "permissions": ["activeTab", "scripting", "tabs", "storage", "favicon"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

@@ -20,7 +20,7 @@ export interface FallbackSurface {
 
 export interface BrowserAdapter extends AttentionAdapter {
   listEligibleTabs(source: SourceTab): Promise<readonly PeekTab[]>;
-  openOverlay(source: SourceTab, message: InitMessage): Promise<void>;
+  openOverlay(source: SourceTab, message: InitMessage, isCurrent: () => boolean): Promise<void>;
   updateOverlay(sourceTabId: number, message: ModelMessage): Promise<void>;
   dismissOverlay(sourceTabId: number, sessionId: string): Promise<void>;
   createFallback(source: SourceTab, sessionId: string): Promise<FallbackSurface>;
@@ -30,7 +30,7 @@ export interface BrowserAdapter extends AttentionAdapter {
   fallbackPageUrl(): string;
   fileSchemeAccessAllowed(): Promise<boolean>;
   revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined>;
-  activateTarget(target: TargetTab): Promise<void>;
+  activateTarget(target: TargetTab, isCurrent: () => boolean): Promise<void>;
 }
 
 export interface InvocationResult {

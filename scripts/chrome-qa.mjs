@@ -1,3 +1,4 @@
+import { qualify } from './final-qualification.mjs';
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
@@ -134,7 +135,7 @@ async function startFixtureServer() {
       const info = await stat(file);
       if (!info.isFile()) throw new Error("not a file");
       response.writeHead(200, {
-        "content-type": extname(file) === ".html" ? "text/html; charset=utf-8" : "application/octet-stream",
+        "content-type": extname(file) === ".html" ? "text/html; charset=utf-8" : extname(file) === ".svg" ? "image/svg+xml" : "application/octet-stream",
         "cache-control": "no-store",
       });
       createReadStream(file).pipe(response);
@@ -513,6 +514,8 @@ async function main() {
     await client.send("Accessibility.enable", {}, sourceSession);
     await client.send("Target.activateTarget", { targetId: sourcePage.targetId });
     await client.send("Page.bringToFront", {}, sourceSession);
+    activateDisposableChrome(chrome);
+    await waitFor('initial source document focus', async () => (await client.send('Runtime.evaluate', { expression: 'document.hasFocus()', returnByValue: true }, sourceSession)).result.value === true);
     await delay(100);
     await capture(client, sourceSession, "00-before-action.png");
 
@@ -581,6 +584,29 @@ async function main() {
       const result = await client.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, workerSession);
       if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
       return result.result.value;
+    };
+    await evalWorker(`(() => {
+      globalThis.peekCommitTrace = [];
+      for (const [name, object, method] of [['tabs.update',chrome.tabs,'update'],['windows.update',chrome.windows,'update']]) {
+        const original = object[method].bind(object);
+        object[method] = (...args) => {
+          const promise = original(...args);
+          void promise.then(value => peekCommitTrace.push({kind:name,at:Date.now(),args,value}), error => peekCommitTrace.push({kind:'error',name,error:String(error)}));
+          return promise;
+        };
+      }
+    })()`);
+    const waitCommitChain = async (start) => {
+      const chain = await waitFor('first completed ordinary activation/focus chain', async () => {
+        const trace = await evalWorker(`peekCommitTrace.slice(${start})`);
+        const active = trace.findIndex(event => event.kind === 'tabs.update');
+        const focus = trace.slice(active + 1).find(event => event.kind === 'windows.update');
+        return active >= 0 && focus ? { active: trace[active], focus, trace } : undefined;
+      }).catch(async error => {
+        await writeFile(resolve(output, 'ordinary-commit-failure.json'), JSON.stringify(await evalWorker('peekCommitTrace'), null, 2));
+        throw error;
+      });
+      return chain.value;
     };
     const commands = await evalWorker("new Promise((resolve) => chrome.commands.getAll(resolve))");
     const actionCommand = commands.find((command) => command.name === "_execute_action");
@@ -652,8 +678,11 @@ async function main() {
     });
     const incrementalTargetId = incrementalIds.value[0];
     await capture(client, sourceSession, "12-search-incremental-prior-partial.png");
+    const incrementalTraceStart = await evalWorker('peekCommitTrace.length');
     await press(client, sourceSession, "Enter");
     await waitForOverlayClosed(client, sourceSession);
+    const incrementalChain = await waitCommitChain(incrementalTraceStart);
+    assert(incrementalChain.active.args[0] === incrementalTargetId, 'First activation chain selected a different incremental target');
     const incrementalCommittedState = await browserState();
     const incrementalCommittedWindow = incrementalCommittedState.windows.find((window) => window.id === incrementalCommittedState.lastFocusedWindowId);
     assert(incrementalCommittedWindow?.tabs.some((tab) => tab.active && tab.id === incrementalTargetId), "Incremental search did not commit its strongest highlighted Orion target");
@@ -1457,6 +1486,17 @@ async function main() {
       await press(client, nativeSession, "Escape");
     }
 
+    let finalQualification;
+    if (process.env.PEEK_QA_FINAL === '1') {
+      assert(process.env.PEEK_QA_NATIVE_SHORTCUT === '1', 'Final qualification requires explicitly enabled disposable native input');
+      finalQualification = await qualify({ client, chrome, chromePath, profile, output, extensionId, sourceSession, sourceTab,
+        sourceChromeTab, sourceUrl, settingsTab, settingsSession, settingsTabTarget: settingsTabTarget.value,
+        evalWorker, browserState, focusSource, targets, attach, waitFor, delay, assert, press, capture,
+        overlayInputState, overlayResultTabIds, waitForOverlay, waitForOverlayClosed, replaceOverlayQuery,
+        measureOverlay, activeTabIdentity, createInterceptedFixturePage, searchFixtureFacts, fixtureOrigins,
+        activateDisposableChrome, CdpClient,
+        getWorkerSession: () => workerSession, setWorkerSession: (session) => { workerSession = session; } });
+    }
     const backgroundBytes = (await stat(resolve(dist, "background.js"))).size;
     const overlayBytes = (await stat(resolve(dist, "overlay.js"))).size;
     const fallbackBytes = (await stat(resolve(dist, "fallback.js"))).size;
@@ -1480,6 +1520,7 @@ async function main() {
         revealSamples,
         samplingLimit: "Sequential Page.captureScreenshot calls are timestamped around each capture. They are not paint timestamps and are not labelled as nominal milliseconds or a true first-frame filmstrip.",
       },
+      finalQualification,
       attention: attentionEvidence,
       fallback: fallbackEvidence,
       search: searchEvidence,

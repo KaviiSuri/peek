@@ -1,3 +1,4 @@
+import { withBrowserFavicons } from "./favicons";
 import type { AttentionIdentity, AttentionState } from "../attention/attention";
 import type { BrowserAdapter, SourceTab, TargetTab } from "./browser-adapter";
 import type { InitMessage, ModelMessage, PeekTab } from "../shared/model";
@@ -60,15 +61,23 @@ export const chromeBrowserAdapter: BrowserAdapter = {
         });
       }
     }
-    return tabs;
+    return withBrowserFavicons(tabs);
   },
 
-  async openOverlay(source: SourceTab, message: InitMessage): Promise<void> {
+  async openOverlay(source: SourceTab, message: InitMessage, isCurrent): Promise<void> {
+    if (!isCurrent()) return;
     await chrome.scripting.executeScript({
       target: { tabId: source.id },
       files: ["overlay.js"],
     });
+    if (!isCurrent()) return;
+    const window = await chrome.windows.get(source.windowId, { populate: true });
+    if (!isCurrent()) return;
+    if (!window.focused || !window.tabs?.some((tab) => tab.id === source.id && tab.active)) {
+      throw new Error("Peek source is no longer focused");
+    }
     await chrome.tabs.sendMessage(source.id, message);
+    if (!isCurrent()) await chromeBrowserAdapter.dismissOverlay(source.id, message.sessionId);
   },
 
   async updateOverlay(sourceTabId: number, message: ModelMessage): Promise<void> {
@@ -164,8 +173,13 @@ export const chromeBrowserAdapter: BrowserAdapter = {
     }
   },
 
-  async activateTarget(target: TargetTab): Promise<void> {
-    await chrome.tabs.update(target.id, { active: true });
+  async activateTarget(target: TargetTab, isCurrent): Promise<void> {
+    if (!isCurrent()) return;
+    const activated = await chrome.tabs.update(target.id, { active: true });
+    if (!isCurrent()) return;
+    if (!activated || activated.id !== target.id || activated.windowId !== target.windowId || activated.incognito) {
+      throw new Error("Peek target changed during activation");
+    }
     await chrome.windows.update(target.windowId, { focused: true });
   },
 };

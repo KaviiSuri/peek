@@ -75,6 +75,21 @@ export interface AttentionAdapter {
 
 const WINDOW_ID_NONE = -1;
 
+// Browser API failures must not retain the pending-event log indefinitely.
+// A late answer after this lifecycle deadline is ignored, never adopted as a
+// fresh focus observation. This is a cleanup bound, not a responsiveness SLA.
+async function bounded<A>(operation: Promise<A>): Promise<A | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation.catch(() => undefined),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 5000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface AttentionTracker {
   start(): void;
   observeActivation(tabId: number, windowId: number): void;
@@ -115,19 +130,21 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
   const persist = async (next: AttentionState): Promise<void> => {
     if (JSON.stringify(next) === JSON.stringify(state)) return;
     state = next;
-    await adapter.saveAttentionState(state);
+    await bounded(adapter.saveAttentionState(state));
   };
 
   const recalculate = (): Promise<void> => scheduleUpdate(async () => {
     await ready;
     let next = baseState;
-    for (const event of events) {
+    const batch = [...events];
+    const settled = batch.every((event) => event.status === "resolved");
+    for (const event of batch) {
       if (event.kind === "remove") {
         next = removeAttentionTab(next, event.tabId);
         continue;
       }
       if (event.kind === "barrier" || event.status === "pending" || !event.candidate) continue;
-      const supersededFocus = event.kind === "focus" && events.some((later) =>
+      const supersededFocus = event.kind === "focus" && batch.some((later) =>
         later.sequence > event.sequence && later.status === "resolved" && later.resolvedOrder !== undefined &&
         event.resolvedOrder !== undefined && later.resolvedOrder < event.resolvedOrder &&
         (later.kind === "barrier" || ((later.kind === "activation" || later.kind === "focus") && later.candidate !== undefined)),
@@ -135,9 +152,10 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
       if (!supersededFocus) next = observeAttention(next, event.candidate);
     }
     await persist(next);
-    if (events.every((event) => event.status === "resolved")) {
+    if (settled) {
       baseState = next;
-      events = [];
+      const consumed = new Set(batch);
+      events = events.filter((event) => !consumed.has(event));
     }
   });
 
@@ -145,7 +163,7 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
     if (!started) start();
     const event: ObservationEvent = { sequence: ++sequence, kind, status: "pending", promise: Promise.resolve() };
     events.push(event);
-    event.promise = adapter.resolveFocusedAttention(windowId, tabId)
+    event.promise = bounded(adapter.resolveFocusedAttention(windowId, tabId))
       .then((candidate) => {
         event.status = "resolved";
         event.resolvedOrder = ++resolutionOrder;
@@ -161,10 +179,10 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
     if (started) return;
     started = true;
     ready = (async () => {
-      const stored = await adapter.loadAttentionState().catch(() => undefined);
+      const stored = await bounded(adapter.loadAttentionState());
       state = decodeAttentionState(stored);
       baseState = state;
-      await adapter.saveAttentionState(state).catch(() => undefined);
+      await bounded(adapter.saveAttentionState(state));
     })();
   }
 

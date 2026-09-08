@@ -1,3 +1,4 @@
+import { isSafeFavicon } from "./shared/favicon";
 import {
   enterSelectionMode,
   highlightedTab,
@@ -53,8 +54,8 @@ const styles = `
     font: 500 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     color: inherit; caret-color: light-dark(#365be7, #92a5ff);
   }
-  input::placeholder { color: light-dark(#858a96, #858994); font-weight: 430; }
-  .mode, .count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: light-dark(#777d89, #898d98); }
+  input::placeholder { color: light-dark(#626876, #a4a8b2); font-weight: 430; }
+  .mode, .count { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: light-dark(#626876, #a4a8b2); }
   .mode { padding: 3px 7px; border-radius: 999px; background: light-dark(#edf0f7, #30323a); }
   .results { margin: 0; padding: 7px; height: calc(100% - 58px); overflow: auto; list-style: none; }
   .row {
@@ -79,12 +80,10 @@ const styles = `
   .favicon img { width: 18px; height: 18px; object-fit: contain; }
   .stack { min-width: 0; flex: 1; display: grid; gap: 2px; }
   .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 19px; font-weight: 610; letter-spacing: -.01em; }
-  .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/17px ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#707684, #9397a2); }
+  .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/17px ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#626876, #a4a8b2); }
   .digit { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 6px; font: 650 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace; color: light-dark(#3d56ad, #c4ceff); background: light-dark(#f4f6ff, #292e42); box-shadow: inset 0 0 0 1px light-dark(#d6ddfa, #4d587d); }
   .state { min-height: 100%; display: grid; place-items: center; padding: 26px; text-align: center; color: light-dark(#686e7a, #a4a8b2); font-size: 13px; line-height: 1.45; }
   .state strong { display: block; margin-bottom: 5px; color: light-dark(#303642, #e4e5e8); font-size: 14px; }
-  @media (prefers-reduced-motion: no-preference) { .palette { animation: peek-in 90ms ease-out; } }
-  @keyframes peek-in { from { opacity: 0; transform: translateY(-3px); } }
   @media (max-width: 520px) { .backdrop { padding-inline: 8px; } .palette { width: calc(100vw - 16px); } }
   @media (max-width: 360px) {
     .mode { display: none; }
@@ -129,6 +128,10 @@ export function createPaletteController(onCancel: () => void = () => undefined):
   let applyModel: ((model: PeekModel) => void) | undefined;
   let disposeSessionListeners: (() => void) | undefined;
   const closedSessions = new Set<string>();
+  const rememberClosed = (id: string) => {
+    closedSessions.add(id);
+    if (closedSessions.size > 128) closedSessions.delete(closedSessions.values().next().value!);
+  };
 
   function teardown(restoreFocus: boolean): void {
     disposeSessionListeners?.();
@@ -144,7 +147,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
   function cancel(restoreFocus = true): void {
     const sessionId = activeSessionId;
     if (!sessionId) return;
-    closedSessions.add(sessionId);
+    rememberClosed(sessionId);
     teardown(restoreFocus);
     void chrome.runtime.sendMessage({ kind: "peek/cancel", sessionId }).catch(() => undefined);
     onCancel();
@@ -303,8 +306,9 @@ export function createPaletteController(onCancel: () => void = () => undefined):
 
           const favicon = document.createElement("span");
           favicon.className = "favicon";
+          favicon.setAttribute("aria-hidden", "true");
           favicon.textContent = tab.title.slice(0, 1).toLocaleUpperCase() || "•";
-          if (tab.favIconUrl) {
+          if (isSafeFavicon(tab.favIconUrl)) {
             const image = document.createElement("img");
             image.src = tab.favIconUrl;
             image.alt = "";
@@ -338,6 +342,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
         requestAnimationFrame(refreshVisibleDigits);
       }
 
+      const ownsSession = () => activeSessionId === message.sessionId && host === nextHost;
       async function commit(tab: PeekTab | undefined): Promise<void> {
         if (!tab || committing || !activeSessionId || !canShowResults()) return;
         committing = true;
@@ -348,7 +353,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
           targetTabId: tab.id,
           targetWindowId: tab.windowId,
         }).catch(() => ({ ok: false, error: "Peek could not reach its background worker." }));
-        if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && host) {
+        if (typeof response === "object" && response !== null && "ok" in response && response.ok === false && ownsSession()) {
           committing = false;
           model = { status: "error", tabs: [], message: "error" in response && typeof response.error === "string" ? response.error : "Peek could not switch tabs." };
           results = [];
@@ -438,10 +443,18 @@ export function createPaletteController(onCancel: () => void = () => undefined):
         }, 0);
       };
       const handleResize = () => { syncMode(); syncAvailableSpace(); refreshVisibleDigits(); };
+      const handleDeparture = () => { if (ownsSession()) cancel(false); };
+      const handleVisibility = () => { if (document.visibilityState === "hidden") handleDeparture(); };
+      window.addEventListener("blur", handleDeparture);
+      document.addEventListener("visibilitychange", handleVisibility);
+      window.addEventListener("pagehide", handleDeparture);
       window.addEventListener("resize", handleResize);
       input.addEventListener("focusin", handleFocusIn);
       input.addEventListener("focusout", handleFocusOut);
       disposeSessionListeners = () => {
+        window.removeEventListener("blur", handleDeparture);
+        document.removeEventListener("visibilitychange", handleVisibility);
+        window.removeEventListener("pagehide", handleDeparture);
         window.removeEventListener("resize", handleResize);
         input.removeEventListener("focusin", handleFocusIn);
         input.removeEventListener("focusout", handleFocusOut);
@@ -472,7 +485,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
 
     dismiss(sessionId) {
       if (activeSessionId !== sessionId) return;
-      closedSessions.add(sessionId);
+      rememberClosed(sessionId);
       teardown(false);
     },
   };

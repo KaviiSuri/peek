@@ -76,7 +76,12 @@ export function registerBackground(
 
     const commit = decodeUnknown(CommitMessageSchema, unknownMessage);
     if (commit) {
-      void app.commit(commit, fallbackSender(sender)).then(sendResponse);
+      void app.commit(commit, fallbackSender(sender)).then((response) => {
+        // A failed activation may follow acknowledged teardown, so the palette
+        // is already gone. Leave a non-focusing recovery signal on the action.
+        if (!response.ok && response.error !== "Peek session expired." && response.error !== "Peek is already switching tabs." && sender.tab?.id !== undefined) reportInvocation(sender.tab.id, true);
+        sendResponse(response);
+      });
       return true;
     }
 

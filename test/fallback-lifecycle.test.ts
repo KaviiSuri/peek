@@ -73,6 +73,43 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("fallback registered lifecycle", () => {
+  it.each(["overlay", "fallback"])("keeps cancellation authority through pending activation in %s", async (kind) => {
+    const activated = deferred<chrome.tabs.Tab>();
+    const started = deferred<void>();
+    const update = vi.fn(async () => undefined);
+    vi.stubGlobal("chrome", { tabs: { update: () => { started.resolve(); return activated.promise; } }, windows: { update } });
+    const f = setup({ activateTarget: chromeBrowserAdapter.activateTarget });
+    let id: string;
+    let identity: FallbackSender;
+    if (kind === "fallback") ({ id, identity } = await f.open());
+    else {
+      f.source.url = "https://ordinary.test";
+      id = (await f.invoke()).sessionId;
+      identity = { tabId: 1, windowId: 10 };
+    }
+    const switching = f.runtime({ kind: "peek/commit", sessionId: id, targetTabId: 2, targetWindowId: 20 }, identity);
+    await started.promise;
+    await f.runtime({ kind: "peek/cancel", sessionId: id }, identity);
+    activated.resolve({ id: 2, windowId: 20 } as chrome.tabs.Tab);
+    expect(await switching).toEqual({ ok: false, error: "Peek session expired." });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("expires ordinary pending model delivery through the registered external focus event", async () => {
+    const listed = deferred<readonly never[]>();
+    const started = deferred<void>();
+    const f = setup({ listEligibleTabs: () => { started.resolve(); return listed.promise; } });
+    f.source.url = "https://ordinary.test";
+    const invocation = f.invoke();
+    await started.promise;
+    f.windowFocus(99);
+    listed.resolve([]);
+    await invocation;
+    expect(f.adapter.dismissOverlay).toHaveBeenCalledOnce();
+    expect(f.adapter.updateOverlay).not.toHaveBeenCalled();
+    expect(f.adapter.activateTarget).not.toHaveBeenCalled();
+  });
+
   it("uses fallback for denied file capability and overlay for granted file capability", async () => {
     const denied = setup({ fileSchemeAccessAllowed: vi.fn(async () => false) });
     denied.source.url = "file:///synthetic/source.html";
@@ -177,7 +214,7 @@ describe("fallback registered lifecycle", () => {
     }
     expect(f.adapter.dismissFallback).not.toHaveBeenCalled();
     expect(await f.runtime(commit, identity)).toEqual({ ok: true });
-    expect(f.adapter.activateTarget).toHaveBeenCalledWith({ id: 2, windowId: 20, current: false });
+    expect(f.adapter.activateTarget).toHaveBeenCalledWith({ id: 2, windowId: 20, current: false }, expect.any(Function));
   });
 
   it("does not activate after unexpected teardown failure and leaves the error recoverable", async () => {
@@ -216,7 +253,7 @@ describe("fallback registered lifecycle", () => {
     activeTabId = 99;
     expect(await f.runtime({ ...commit, targetTabId: 1, targetWindowId: 10 }, identity)).toEqual({ ok: true });
     expect(activeTabId).toBe(1);
-    expect(f.adapter.activateTarget).toHaveBeenCalledExactlyOnceWith({ id: 1, windowId: 10, current: false });
+    expect(f.adapter.activateTarget).toHaveBeenCalledExactlyOnceWith({ id: 1, windowId: 10, current: false }, expect.any(Function));
   });
 
   it.each(["revalidation", "teardown"])("cancellation wins during deferred %s", async (stage) => {

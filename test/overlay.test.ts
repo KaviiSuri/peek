@@ -46,6 +46,27 @@ function openOverlay(sessionId = "session-1") {
 }
 
 describe("ordinary-page overlay", () => {
+  it("dismisses on window blur even while the shadow input remains active", () => {
+    const { host, root, input } = openOverlay("external-window-blur");
+    expect(root.activeElement).toBe(input);
+    window.dispatchEvent(new Event("blur"));
+    expect(host.isConnected).toBe(false);
+    expect(sent).toContainEqual({ kind: "peek/cancel", sessionId: "external-window-blur" });
+  });
+
+  it("never assigns remote or SVG favicon metadata to an image request", () => {
+    const { root } = openOverlay("favicon-boundary");
+    const src = vi.spyOn(HTMLImageElement.prototype, "src", "set");
+    for (const favIconUrl of ["https://icon.test/tracker.png", "//icon.test/a.png", "data:image/svg+xml,<svg/>"]) {
+      listener?.({ kind: "peek/model", sessionId: "favicon-boundary", model: { status: "ready", tabs: [
+        { id: 2, windowId: 2, title: "Orion", url: "https://github.com/orion", favIconUrl, lastAccessed: 1, current: false },
+      ] } }, {}, () => undefined);
+    }
+    expect(src).not.toHaveBeenCalled();
+    expect(root.querySelector(".favicon")?.textContent).toBe("O");
+    src.mockRestore();
+  });
+
   it("appends a coherent populated composition and focuses the input on first reveal", () => {
     const { root, input } = openOverlay();
     expect(root.querySelector("style")?.textContent).toContain("place-items: center");
@@ -475,6 +496,23 @@ describe("ordinary-page overlay", () => {
     expect(next.host.isConnected).toBe(true);
     expect(document.querySelector("#peek-extension-host")).toBe(next.host);
     vi.useRealTimers();
+  });
+
+  it("does not let a late commit failure render or focus an obsolete palette", async () => {
+    let resolve!: (value: { ok: boolean; error: string }) => void;
+    sendMessage.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const old = openOverlay("late-commit-old");
+    keydown(old.input, "Enter");
+    const replacement = openOverlay("late-commit-new");
+    const focus = vi.spyOn(old.input, "focus");
+    resolve({ ok: false, error: "Stale activation failure" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(focus).not.toHaveBeenCalled();
+    expect(replacement.root.activeElement).toBe(replacement.input);
+    expect(old.root.textContent).not.toContain("Stale activation failure");
+    expect(replacement.root.textContent).not.toContain("Stale activation failure");
+    focus.mockRestore();
   });
 
   it("clears selectable results after a commit error so hidden rows cannot navigate or recommit", async () => {

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { registerBackground } from "../src/background/wiring";
 import type { BackgroundApp } from "../src/background/app";
 
-function setup() {
+function setup(report = vi.fn()) {
   let actionListener: ((tab: chrome.tabs.Tab) => void) | undefined;
   let messageListener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean | undefined) | undefined;
   let activatedListener: ((info: chrome.tabs.OnActivatedInfo) => void) | undefined;
@@ -28,7 +28,7 @@ function setup() {
     onTabRemoved: { addListener(listener) { removedListener = listener as (tabId: number) => void; } },
     onWindowFocusChanged: { addListener(listener) { focusedListener = listener; } },
     onWindowRemoved: { addListener(listener) { windowRemovedListener = listener; } },
-  }, app);
+  }, app, report);
   return {
     app,
     actionListener: () => actionListener!,
@@ -41,6 +41,22 @@ function setup() {
 }
 
 describe("synchronous MV3 wiring", () => {
+  it("reports a non-focusing action error after failed switching but not after cancellation", async () => {
+    const report = vi.fn();
+    const wired = setup(report);
+    const response = vi.fn();
+    const message = { kind: "peek/commit", sessionId: "s", targetTabId: 2, targetWindowId: 3 };
+    const sender = { tab: { id: 1 } as chrome.tabs.Tab };
+    vi.mocked(wired.app.commit).mockResolvedValueOnce({ ok: false, error: "Peek could not switch to that tab." });
+    wired.messageListener()(message, sender, response);
+    await Promise.resolve();
+    expect(report).toHaveBeenCalledExactlyOnceWith(1, true);
+    vi.mocked(wired.app.commit).mockResolvedValueOnce({ ok: false, error: "Peek session expired." });
+    wired.messageListener()(message, sender, response);
+    await Promise.resolve();
+    expect(report).toHaveBeenCalledOnce();
+  });
+
   it("registers action and message listeners before asynchronous work", () => {
     const wired = setup();
     expect(wired.actionListener()).toBeTypeOf("function");

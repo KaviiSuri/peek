@@ -41,6 +41,20 @@ function fakeBrowser(overrides: Partial<BrowserAdapter> = {}) {
 }
 
 describe("production background composition", () => {
+  it.each(["focus", "activation", "close"])("expires and dismisses ordinary sessions on source departure: %s", async (departure) => {
+    const fake = fakeBrowser();
+    const app = createBackgroundApp(fake.adapter);
+    const opened = await app.invoke({ id: 1, windowId: 4 });
+    if (departure === "focus") app.observeWindowFocus(9);
+    if (departure === "activation") app.observeTabActivation(3, 4);
+    if (departure === "close") app.removeTabFromAttention(1);
+    await Promise.resolve();
+    expect(fake.calls).toContain("dismiss");
+    await expect(app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 1))
+      .resolves.toEqual({ ok: false, error: "Peek session expired." });
+    expect(fake.calls).not.toContain("activate");
+  });
+
   it("opens a stable input before model work, then runs filter, highlight, exact revalidation, dismiss, activation and focus", async () => {
     const fake = fakeBrowser();
     const app = createBackgroundApp(fake.adapter);
@@ -67,15 +81,18 @@ describe("production background composition", () => {
   it("does not deliver a late model after cancellation during deferred enumeration", async () => {
     let releaseTabs!: (tabs: readonly PeekTab[]) => void;
     const tabsReady = new Promise<readonly PeekTab[]>((resolve) => { releaseTabs = resolve; });
+    let signalList!: () => void;
+    const listStarted = new Promise<void>((resolve) => { signalList = resolve; });
     let receiveInit!: (message: InitMessage) => void;
     const initReady = new Promise<InitMessage>((resolve) => { receiveInit = resolve; });
     const fake = fakeBrowser({
       async openOverlay(_source, message) { fake.calls.push("open"); receiveInit(message); },
-      async listEligibleTabs() { fake.calls.push("list"); return tabsReady; },
+      async listEligibleTabs() { fake.calls.push("list"); signalList(); return tabsReady; },
     });
     const app = createBackgroundApp(fake.adapter);
     const invocation = app.invoke({ id: 1, windowId: 4 });
     const init = await initReady;
+    await listStarted;
 
     app.cancel({ kind: "peek/cancel", sessionId: init.sessionId }, 1);
     releaseTabs(fixture());
