@@ -89,15 +89,26 @@ export const chromeBrowserAdapter: BrowserAdapter = {
     const top = sourceWindow.top === undefined || sourceWindow.height === undefined
       ? undefined
       : Math.round(sourceWindow.top + (sourceWindow.height - height) / 2);
-    const created = await chrome.windows.create({
+    const options: chrome.windows.CreateData = {
       url: `${chrome.runtime.getURL("fallback.html")}#${encodeURIComponent(sessionId)}`,
       type: "popup",
       focused: false,
       width,
       height,
-      ...(left === undefined ? {} : { left }),
-      ...(top === undefined ? {} : { top }),
-    });
+    };
+    let created: chrome.windows.Window | undefined;
+    try {
+      created = await chrome.windows.create({
+        ...options,
+        ...(left === undefined ? {} : { left }),
+        ...(top === undefined ? {} : { top }),
+      });
+    } catch (error) {
+      // A window manager can place the source mostly off-screen. Chrome refuses
+      // that requested center; let Chrome choose visible bounds for this case only.
+      if (!(error instanceof Error) || error.message !== "Invalid value for bounds. Bounds must be at least 50% within visible screen space.") throw error;
+      created = await chrome.windows.create(options);
+    }
     const tab = created?.tabs?.[0];
     if (created?.id === undefined || tab?.id === undefined) {
       if (created?.id !== undefined) await chrome.windows.remove(created.id).catch(() => undefined);

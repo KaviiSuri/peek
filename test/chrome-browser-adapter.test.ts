@@ -111,6 +111,22 @@ describe("Chrome browser adapter", () => {
     });
   });
 
+  it("lets Chrome place the popup visibly only for its exact off-screen bounds rejection", async () => {
+    getWindow.mockResolvedValue({ id: 4, left: 1225, top: 41, width: 500, height: 906 });
+    createWindow.mockRejectedValueOnce(new Error("Invalid value for bounds. Bounds must be at least 50% within visible screen space."))
+      .mockResolvedValueOnce({ id: 91, tabs: [{ id: 90 }] });
+    await expect(chromeBrowserAdapter.createFallback({ id: 10, windowId: 4 }, "s")).resolves.toEqual({ tabId: 90, windowId: 91 });
+    expect(createWindow.mock.calls[0]?.[0]).toMatchObject({ left: 1225, top: 334, focused: false });
+    expect(createWindow.mock.calls[1]?.[0]).toEqual({ url: "chrome-extension://peek-extension/fallback.html#s", type: "popup", focused: false, width: 500, height: 320 });
+  });
+
+  it("does not retry or mask an arbitrary popup creation failure", async () => {
+    getWindow.mockResolvedValue({ id: 4, left: 100, top: 50, width: 1200, height: 800 });
+    createWindow.mockRejectedValue(new Error("backend unavailable"));
+    await expect(chromeBrowserAdapter.createFallback({ id: 10, windowId: 4 }, "s")).rejects.toThrow("backend unavailable");
+    expect(createWindow).toHaveBeenCalledOnce();
+  });
+
   it("routes fallback model delivery through extension messaging and makes teardown idempotent", async () => {
     runtimeSendMessage.mockResolvedValue(undefined);
     removeWindow.mockRejectedValue(new Error("No window with id: 91."));

@@ -1196,7 +1196,8 @@ async function main() {
       globalThis.peekFallbackTrace = [];
       const log = (kind, data) => peekFallbackTrace.push({at:Date.now(),kind,data});
       chrome.runtime.onMessage.addListener((message,sender)=>{log('message',{message,tab:sender.tab?.id,url:sender.url});});
-      for (const [name,object,method] of [['tabs.update',chrome.tabs,'update'],['windows.update',chrome.windows,'update'],['windows.remove',chrome.windows,'remove']]) {
+      chrome.action.onClicked.addListener(tab=>log('action',tab));
+      for (const [name,object,method] of [['tabs.update',chrome.tabs,'update'],['windows.update',chrome.windows,'update'],['windows.remove',chrome.windows,'remove'],['windows.create',chrome.windows,'create'],['scripting.executeScript',chrome.scripting,'executeScript']]) {
         const original = object[method].bind(object);
         object[method] = (...args) => {
           log(name+':start',args);
