@@ -327,7 +327,7 @@ export async function qualify(c) {
       await writeFile(resolve(output, `trace-${count}-${kind}.json`), traceText);
       const snapshots = JSON.parse(traceText).traceEvents.filter(event => event.name === 'Screenshot' && event.args?.snapshot);
       for (const [i, event] of snapshots.entries()) await writeFile(resolve(output, `trace-frame-${count}-${kind}-${i}.jpg`), Buffer.from(event.args.snapshot, 'base64'));
-      report.visuals.push({ count, kind, browserTrace: `trace-${count}-${kind}.json`, screenshotEvents: snapshots.map(({ ts, pid, tid }) => ({ ts, pid, tid })), limit: 'Browser tracing started before gesture; screenshot trace events use Chrome monotonic microseconds. Inspect captured content; screenshot sampling may omit frames.' });
+      report.visuals.push({ count, kind, browserTrace: `trace-${count}-${kind}.json`, screenshotEvents: snapshots.map(({ ts, pid, tid }) => ({ ts, pid, tid })), limit: kind === 'fallback' ? 'Source-page trace began before gesture; it does not prove the new fallback window first paint. Inspect content and obtain separate popup reveal evidence.' : 'Source-page tracing started before gesture; screenshot events use Chrome monotonic microseconds. Inspect content; sampling may omit frames.' });
       }
       await close(visual);
       await save();

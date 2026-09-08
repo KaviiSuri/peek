@@ -28,7 +28,7 @@ The [tooling decision note](docs/tooling-decisions.md) records the selected vers
 5. Open ordinary synthetic pages in at least two normal windows. Press Control+Space or click Peek's toolbar action.
 6. Open `chrome://settings/` or another known restricted Chrome surface. Invocation opens the same palette in a transient browser window, requesting source-centred bounds that Chrome or the OS may adjust. Chrome Web Store pages are also explicitly classified because Chrome blocks extension injection there despite their HTTPS scheme. File URLs use fallback only when Chrome's file-access capability is denied.
 
-The [technical qualification matrix](docs/final-technical-acceptance.md) separates automated evidence from the remaining human trial.
+The [technical qualification matrix](docs/final-technical-acceptance.md) separates passing source checks, unfinished final Chrome qualification, and the later human trial. An open palette does not survive worker suspension transparently: Enter reports expiry without switching; Escape and a fresh invocation recover.
 
 The palette first mounts a complete, centred loading composition with its input focused, then replaces the loading row with Chrome's tab model without replacing the input or query. Type a title, hostname or URL-path fragment; ordinary digits remain query text. Arrow keys only change the highlight. Enter revalidates the exact tab and window, removes the palette, activates that tab and focuses its containing window. Escape and click-away remove the palette without activation.
 
