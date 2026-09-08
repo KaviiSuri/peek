@@ -442,7 +442,12 @@ export function createPaletteController(onCancel: () => void = () => undefined):
           if (host && shadow.activeElement === null) cancel(false);
         }, 0);
       };
-      const handleResize = () => { syncMode(); syncAvailableSpace(); refreshVisibleDigits(); };
+      const handleResize = () => {
+        syncMode();
+        syncAvailableSpace();
+        if (canShowResults()) list.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
+        refreshVisibleDigits();
+      };
       const handleDeparture = () => { if (ownsSession()) cancel(false); };
       const handleVisibility = () => { if (document.visibilityState === "hidden") handleDeparture(); };
       window.addEventListener("blur", handleDeparture);
