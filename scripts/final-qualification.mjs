@@ -50,7 +50,7 @@ export async function qualify(c) {
   // posting, excluding Swift startup/compilation and IPC setup from latency.
   const swift = resolve(output, 'post-key.swift');
   const binary = resolve(output, 'post-key');
-  await writeFile(swift, `import CoreGraphics\nimport Foundation\nguard CGPreflightPostEventAccess() else { fatalError("No existing event permission") }\nlet pid = pid_t(Int32(CommandLine.arguments[1])!)\nlet source = CGEventSource(stateID: .hidSystemState)\nlet down = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: true)!\ndown.flags = [.maskControl]\nprint(Date().timeIntervalSince1970 * 1000)\ndown.postToPid(pid)\nusleep(20000)\nlet up = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: false)!\nup.flags = [.maskControl]\nup.postToPid(pid)\n`);
+  await writeFile(swift, `import CoreGraphics\nimport Foundation\nguard CGPreflightPostEventAccess() else { fatalError("No existing event permission") }\nlet pid = pid_t(Int32(CommandLine.arguments[1])!)\nlet source = CGEventSource(stateID: .hidSystemState)\nlet down = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: true)!\ndown.flags = [.maskControl]\nprint(Date().timeIntervalSince1970 * 1000)\ndown.postToPid(pid)\nusleep(20000)\nlet up = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: false)!\nup.flags = []\nup.postToPid(pid)\n`);
   execFileSync('/usr/bin/swiftc', [swift, '-o', binary]);
   const native = () => {
     const command = execFileSync('/bin/ps', ['-p', String(chrome.pid), '-o', 'command='], { encoding: 'utf8' }).trim();

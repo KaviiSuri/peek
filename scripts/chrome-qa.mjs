@@ -462,7 +462,7 @@ down.flags = [.${modifier}]
 down.postToPid(pid)
 usleep(20000)
 let up = CGEvent(keyboardEventSource: source, virtualKey: ${keyCode}, keyDown: false)!
-up.flags = [.${modifier}]
+up.flags = []
 up.postToPid(pid)`;
   execFileSync("/usr/bin/swift", ["-e", script], { stdio: "pipe" });
   return { pid: chrome.pid, executable: chromePath, profile, processCommandVerified: true, preflightPostEventAccess: true, facility: "CoreGraphics CGEvent.postToPid(disposableChromePid)" };
