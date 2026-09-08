@@ -34,6 +34,12 @@ describe("registered attention event path", () => {
       async openOverlay(_source, _message: InitMessage) {},
       async updateOverlay(_sourceTabId, message) { delivered = message; },
       async dismissOverlay() {},
+      async createFallback() { return { tabId: 90, windowId: 91 }; },
+      async presentFallback() { return true; },
+      async updateFallback() {},
+      async dismissFallback() {},
+      fallbackPageUrl() { return "chrome-extension://peek-extension/fallback.html"; },
+      async fileSchemeAccessAllowed() { return true; },
       async revalidateTarget(tabId, windowId) { return { id: tabId, windowId, current: tabId === 2 }; },
       async activateTarget() {},
     };
@@ -45,6 +51,7 @@ describe("registered attention event path", () => {
       onTabActivated: { addListener(listener) { activated = listener; } },
       onTabRemoved: { addListener() {} },
       onWindowFocusChanged: { addListener() {} },
+      onWindowRemoved: { addListener() {} },
     }, app);
     app.start();
 
@@ -77,6 +84,12 @@ describe("registered attention event path", () => {
       async openOverlay() {},
       async updateOverlay(_sourceTabId, message) { delivered = message; },
       async dismissOverlay() {},
+      async createFallback() { return { tabId: 90, windowId: 91 }; },
+      async presentFallback() { return true; },
+      async updateFallback() {},
+      async dismissFallback() {},
+      fallbackPageUrl() { return "chrome-extension://peek-extension/fallback.html"; },
+      async fileSchemeAccessAllowed() { return true; },
       async revalidateTarget(tabId, windowId) { return { id: tabId, windowId, current: tabId === 3 }; },
       async activateTarget() {},
     };
@@ -88,6 +101,7 @@ describe("registered attention event path", () => {
       onTabActivated: { addListener() {} },
       onTabRemoved: { addListener() {} },
       onWindowFocusChanged: { addListener(listener) { focused = listener; } },
+      onWindowRemoved: { addListener() {} },
     }, app);
     app.start();
 
@@ -114,6 +128,12 @@ describe("registered attention event path", () => {
       async openOverlay() {},
       async updateOverlay() {},
       async dismissOverlay() {},
+      async createFallback() { return { tabId: 90, windowId: 91 }; },
+      async presentFallback() { return true; },
+      async updateFallback() {},
+      async dismissFallback() {},
+      fallbackPageUrl() { return "chrome-extension://peek-extension/fallback.html"; },
+      async fileSchemeAccessAllowed() { return true; },
       async revalidateTarget(tabId, windowId) { return { id: tabId, windowId, current: true }; },
       activateTarget,
     };

@@ -60,10 +60,22 @@ export const CancelMessageSchema = Schema.Struct({
   sessionId: Schema.String,
 });
 
+export const FallbackReadyMessageSchema = Schema.Struct({
+  kind: Schema.Literal("peek/fallback-ready"),
+  sessionId: Schema.String,
+});
+
+export const FallbackMountedMessageSchema = Schema.Struct({
+  kind: Schema.Literal("peek/fallback-mounted"),
+  sessionId: Schema.String,
+});
+
 export type InitMessage = Schema.Schema.Type<typeof InitMessageSchema>;
 export type ModelMessage = Schema.Schema.Type<typeof ModelMessageSchema>;
 export type CommitMessage = Schema.Schema.Type<typeof CommitMessageSchema>;
 export type CancelMessage = Schema.Schema.Type<typeof CancelMessageSchema>;
+export type FallbackReadyMessage = Schema.Schema.Type<typeof FallbackReadyMessageSchema>;
+export type FallbackMountedMessage = Schema.Schema.Type<typeof FallbackMountedMessageSchema>;
 
 export function decodeUnknown<A, I>(schema: Schema.Schema<A, I>, value: unknown): A | undefined {
   const result = Schema.decodeUnknownEither(schema)(value);

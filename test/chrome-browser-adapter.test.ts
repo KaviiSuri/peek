@@ -11,19 +11,30 @@ const sendMessage = vi.fn();
 const getStorage = vi.fn();
 const setStorage = vi.fn();
 const getLastFocused = vi.fn();
+const createWindow = vi.fn();
+const removeWindow = vi.fn();
+const runtimeSendMessage = vi.fn();
+const isAllowedFileSchemeAccess = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("chrome", {
-    runtime: { id: "peek-extension" },
-    windows: { getAll, get: getWindow, getLastFocused, update: updateWindow },
+    runtime: { id: "peek-extension", getURL: (path: string) => `chrome-extension://peek-extension/${path}`, sendMessage: runtimeSendMessage },
+    windows: { getAll, get: getWindow, getLastFocused, update: updateWindow, create: createWindow, remove: removeWindow },
     tabs: { get: getTab, update: updateTab, sendMessage },
     scripting: { executeScript },
+    extension: { isAllowedFileSchemeAccess },
     storage: { session: { get: getStorage, set: setStorage } },
   });
 });
 
 describe("Chrome browser adapter", () => {
+  it.each([true, false])("reads Chrome file-scheme capability without changing the grant (%s)", async (allowed) => {
+    isAllowedFileSchemeAccess.mockResolvedValue(allowed);
+    await expect(chromeBrowserAdapter.fileSchemeAccessAllowed()).resolves.toBe(allowed);
+    expect(isAllowedFileSchemeAccess).toHaveBeenCalledOnce();
+  });
+
   it("excludes per-tab incognito entries, non-normal windows and Peek's own pages from listing", async () => {
     getAll.mockResolvedValue([
       {
@@ -90,6 +101,69 @@ describe("Chrome browser adapter", () => {
     expect(executeScript).toHaveBeenCalledWith({ target: { tabId: 10 }, files: ["overlay.js"] });
     expect(sendMessage).toHaveBeenCalledWith(10, message);
     expect(executeScript.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[0]!);
+  });
+
+  it("creates a centred transient extension window and returns its exact provenance", async () => {
+    getWindow.mockResolvedValue({ id: 4, left: 100, top: 50, width: 1200, height: 800 });
+    createWindow.mockResolvedValue({ id: 91, tabs: [{ id: 90, windowId: 91 }] });
+
+    await expect(chromeBrowserAdapter.createFallback({ id: 10, windowId: 4 }, "session / one")).resolves.toEqual({ tabId: 90, windowId: 91 });
+    expect(createWindow).toHaveBeenCalledWith({
+      url: "chrome-extension://peek-extension/fallback.html#session%20%2F%20one",
+      type: "popup",
+      focused: false,
+      width: 720,
+      height: 320,
+      left: 340,
+      top: 290,
+    });
+  });
+
+  it("lets Chrome place the popup visibly only for its exact off-screen bounds rejection", async () => {
+    getWindow.mockResolvedValue({ id: 4, left: 1225, top: 41, width: 500, height: 906 });
+    createWindow.mockRejectedValueOnce(new Error("Invalid value for bounds. Bounds must be at least 50% within visible screen space."))
+      .mockResolvedValueOnce({ id: 91, tabs: [{ id: 90 }] });
+    await expect(chromeBrowserAdapter.createFallback({ id: 10, windowId: 4 }, "s")).resolves.toEqual({ tabId: 90, windowId: 91 });
+    expect(createWindow.mock.calls[0]?.[0]).toMatchObject({ left: 1225, top: 334, focused: false });
+    expect(createWindow.mock.calls[1]?.[0]).toEqual({ url: "chrome-extension://peek-extension/fallback.html#s", type: "popup", focused: false, width: 500, height: 320 });
+  });
+
+  it("does not retry or mask an arbitrary popup creation failure", async () => {
+    getWindow.mockResolvedValue({ id: 4, left: 100, top: 50, width: 1200, height: 800 });
+    createWindow.mockRejectedValue(new Error("backend unavailable"));
+    await expect(chromeBrowserAdapter.createFallback({ id: 10, windowId: 4 }, "s")).rejects.toThrow("backend unavailable");
+    expect(createWindow).toHaveBeenCalledOnce();
+  });
+
+  it("routes fallback model delivery through extension messaging and makes teardown idempotent", async () => {
+    runtimeSendMessage.mockResolvedValue(undefined);
+    removeWindow.mockRejectedValue(new Error("No window with id: 91."));
+    const message = { kind: "peek/model" as const, sessionId: "s", model: { status: "ready" as const, tabs: [] } };
+    await chromeBrowserAdapter.updateFallback(message);
+    await expect(chromeBrowserAdapter.dismissFallback(91)).resolves.toBeUndefined();
+    expect(runtimeSendMessage).toHaveBeenCalledWith(message);
+    expect(removeWindow).toHaveBeenCalledWith(91);
+  });
+
+  it("propagates unexpected fallback close failures rather than pretending teardown succeeded", async () => {
+    removeWindow.mockRejectedValue(new Error("backend unavailable"));
+    await expect(chromeBrowserAdapter.dismissFallback(91)).rejects.toThrow("backend unavailable");
+    removeWindow.mockRejectedValue(new Error("No window with id: 92."));
+    await expect(chromeBrowserAdapter.dismissFallback(91)).rejects.toThrow("No window with id: 92.");
+  });
+
+  it("focuses a ready fallback only while its source is still active and its session is current", async () => {
+    const source = { id: 10, windowId: 4 };
+    const surface = { tabId: 90, windowId: 91 };
+    getWindow.mockResolvedValue({ focused: true, tabs: [{ id: 10, active: true }] });
+    await expect(chromeBrowserAdapter.presentFallback(source, surface, () => false)).resolves.toBe(false);
+    expect(updateWindow).not.toHaveBeenCalled();
+    getWindow.mockResolvedValue({ focused: false, tabs: [{ id: 10, active: true }] });
+    await expect(chromeBrowserAdapter.presentFallback(source, surface, () => true)).resolves.toBe(false);
+    expect(updateWindow).not.toHaveBeenCalled();
+    getWindow.mockResolvedValue({ focused: true, tabs: [{ id: 10, active: true }] });
+    await expect(chromeBrowserAdapter.presentFallback(source, surface, () => true)).resolves.toBe(true);
+    expect(updateWindow).toHaveBeenCalledExactlyOnceWith(91, { focused: true });
   });
 
   it("revalidates exact tab and window identity and rejects incognito targets", async () => {
