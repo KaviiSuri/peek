@@ -49,7 +49,7 @@ export async function qualify(c) {
     if (!row) return undefined;
     const { object } = await client.send('DOM.resolveNode', { nodeId: row.nodeId }, session);
     const value = (await client.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return {path:getComputedStyle(this.querySelector('.path')).color,background:getComputedStyle(this).backgroundColor,title:getComputedStyle(this.querySelector('.title')).color}}`, returnByValue: true }, session)).result.value;
-    const luminance = color => color.match(/[\\d.]+/g).slice(0, 3).map(Number).map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+    const luminance = color => color.match(/[\d.]+/g).slice(0, 3).map(Number).map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
     const a = luminance(value.path), b = luminance(value.background);
     return { ...value, pathContrast: (Math.max(a, b) + .05) / (Math.min(a, b) + .05) };
   };
@@ -246,6 +246,33 @@ export async function qualify(c) {
   report.pdf = { url: pdfUrl, contentType, presentation: pdfSurface.kind, postedAt: pdfPostedAt, typedQuery: 'peek', before: pdfBefore, after: pdfAfter };
   await client.send('Target.closeTarget', { targetId: pdfPage.targetId });
   await save();
+
+  report.openPaletteIdle = [];
+  for (const kind of ['overlay', 'fallback']) {
+    await sourceFocus(kind);
+    const surface = await open(kind);
+    await waitFor('active palette model', async () => (await overlayResultTabIds(client, surface.session)).length > 0);
+    const before = await browserState();
+    const detachedAt = Date.now();
+    await client.send('Target.detachFromTarget', { sessionId: getWorkerSession() });
+    await waitFor('natural idle while palette remains open', async () => !(await targets(client)).some(t => t.type === 'service_worker' && t.url.startsWith(workerUrl)), 70000);
+    const idleAt = Date.now();
+    const focusedBeforeEnter = await focusState(surface.session);
+    assert(focusedBeforeEnter.focused, 'Open-palette idle lost focus; no manufactured cold Enter');
+    await press(client, surface.session, 'Enter');
+    await reattach();
+    await waitFor('safe expired-session error after active UI idle', async () => (await client.send('Accessibility.getFullAXTree', {}, surface.session)).nodes.some(node => node.name?.value?.includes('Peek session expired')));
+    const after = await browserState();
+    assert(JSON.stringify(activeTabIdentity(before)) === JSON.stringify(activeTabIdentity(after)) && before.lastFocusedWindowId === after.lastFocusedWindowId, 'Expired-session Enter changed tab/window identity');
+    await capture(client, surface.session, `open-idle-${kind}.png`);
+    await close(surface);
+    await sourceFocus(kind);
+    const recovered = await open(kind);
+    await waitFor('reinvoke after expired active UI', async () => (await overlayResultTabIds(client, recovered.session)).length > 0);
+    await close(recovered);
+    report.openPaletteIdle.push({ kind, detachedAt, idleAt, forcedStop: false, focusedBeforeEnter, before, after, result: 'safe expiration without activation; Escape and fresh invocation recover', limit: 'An open palette session is in worker memory; Enter after natural suspension requires close/reinvoke. No stale selection is activated.' });
+    await save();
+  }
 
   // Keep the original three-window clipping controls above; workload sizes here
   // count the ambiguity fixture, with source/Settings controls listed separately.
