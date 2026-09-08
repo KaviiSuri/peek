@@ -41,6 +41,40 @@ function setup(report = vi.fn()) {
 }
 
 describe("synchronous MV3 wiring", () => {
+  it.each([true, false])('new invocation owns global action status when old failure=%s settles last', async oldFails => {
+    let resolve!: (value: Awaited<ReturnType<BackgroundApp['invoke']>>) => void, reject!: (error: Error) => void;
+    const old = new Promise<Awaited<ReturnType<BackgroundApp['invoke']>>>((yes, no) => { resolve = yes; reject = no; });
+    const report = vi.fn(), wired = setup(report);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const success = { sessionId: 's', model: { status: 'ready' as const, tabs: [] } };
+    vi.mocked(wired.app.invoke).mockReturnValueOnce(old);
+    if (oldFails) vi.mocked(wired.app.invoke).mockResolvedValueOnce(success);
+    else vi.mocked(wired.app.invoke).mockRejectedValueOnce(new Error('current failure'));
+    wired.actionListener()({ id: 1, windowId: 10 } as chrome.tabs.Tab);
+    wired.actionListener()({ id: 2, windowId: 20 } as chrome.tabs.Tab);
+    await Promise.resolve();
+    if (oldFails) reject(new Error('obsolete failure')); else resolve(success);
+    await Promise.resolve();
+    errorLog.mockRestore();
+    expect(report).toHaveBeenCalledExactlyOnceWith(2, !oldFails);
+  });
+
+  it('does not let an obsolete commit callback overwrite a newer invocation status', async () => {
+    let resolve!: (value: Awaited<ReturnType<BackgroundApp['commit']>>) => void;
+    const old = new Promise<Awaited<ReturnType<BackgroundApp['commit']>>>(yes => { resolve = yes; });
+    const report = vi.fn(), wired = setup(report), respond = vi.fn();
+    wired.actionListener()({ id: 1, windowId: 10 } as chrome.tabs.Tab);
+    await Promise.resolve(); report.mockClear();
+    vi.mocked(wired.app.commit).mockReturnValueOnce(old);
+    wired.messageListener()({ kind: 'peek/commit', sessionId: 's', targetTabId: 3, targetWindowId: 30 }, { tab: { id: 1 } as chrome.tabs.Tab }, respond);
+    wired.actionListener()({ id: 2, windowId: 20 } as chrome.tabs.Tab);
+    await Promise.resolve();
+    resolve({ ok: false, error: 'Peek could not switch to that tab.' });
+    await Promise.resolve();
+    expect(respond).toHaveBeenCalledWith({ ok: false, error: 'Peek could not switch to that tab.' });
+    expect(report).toHaveBeenCalledExactlyOnceWith(2, false);
+  });
+
   it("reports a non-focusing action error after failed switching but not after cancellation", async () => {
     const report = vi.fn();
     const wired = setup(report);
