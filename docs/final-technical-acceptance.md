@@ -37,7 +37,7 @@ PEEK_QA_REQUIRE_COMMITTED=1 PEEK_QA_NATIVE_SHORTCUT=1 PEEK_QA_FINAL=1 \
 
 The command loads the exact unpacked build into a new disposable branded Google Chrome profile. Native input targets a positively identified process with existing event-posting permission. It does not change OS shortcuts, Accessibility grants, personal profiles or Downloads installations. Do not run parallel focus QA.
 
-The fixed 50ms character probe remains, including failure diagnostics. It is not a universal latency SLA. Natural idle requires worker-debugging detach and actual target disappearance without forced termination. The source must remain focused immediately before native posting; a focus-lost attempt is recorded as unmeasured, not silently refocused and called cold. Forced restart and fresh-profile startup remain separately labelled.
+The fixed 50ms core character probe remains, including failure diagnostics. It is not a universal latency SLA or natural-idle evidence. Warm/cold workload samples await AX readiness and worker attachment before typing; their fields are explicitly readiness-gated. They cannot establish immediate cold-input preservation. A separate early cold-character qualification remains pending. Natural idle requires worker-debugging detach and actual target disappearance without forced termination. The source must remain focused immediately before native posting; a focus-lost attempt is recorded as unmeasured, not silently refocused and called cold. Forced restart and fresh-profile startup remain separately labelled.
 
 Native-post timestamps exclude compilation/startup of the compiled key helper. Input, query/order, commit and cancellation intervals include CDP observation overhead. The first completed activation/focus chain must match the selected tab/window and exact `{active:true}` / `{focused:true}` options before eventual browser state is checked. Cancellation teardown duration is separate from the first collected source-ready observation. Both the actual source-window focus and visible document focus must hold; otherwise the sample is incomplete with no readiness latency/pass. No focus restoration is performed inside that measurement. Trace screenshot events use Chrome timestamps. Sequential screenshots are observations, not first-paint timestamps. Geometry is now captured in one synchronous DOM evaluation rather than mixing bounds across OS resizes. Tracing starts on the source page before the gesture; source-page tracing does not itself prove a new fallback window's first paint. Captured frames still require inspection. CDP input omits platform-native virtual keycodes; genuine native CGEvent checks remain separate.
 
@@ -51,7 +51,7 @@ Retained artifacts are in PEEK-16's worker evidence (`thr_isnxp6bej2`). `teardow
 
 Subsequent harness corrections cover keycodes, released native modifiers, worker reload identity, atomic geometry and page-scoped trace streams. Latest desktop attempt 20 stopped with personal Dia as foreground owner; earlier diagnostics recorded System Information. Neither app was controlled. Their causal relationship to synthetic input is not established. Browser ownership was released; native QA remains paused pending the parent's quiet-desktop grant.
 
-Warm/natural-idle 30/100-tab distributions, both presentations' final reveal/visual inspection, and a complete exact-source Chrome run remain required technical work. They are not moved to PEEK-17.
+Warm/natural-idle 30/100-tab distributions, early cold-character qualification, both presentations' final reveal/visual inspection, and a complete exact-source Chrome run remain required technical work. They are not moved to PEEK-17.
 
 | Story | Technical coverage | Final evidence |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ Warm/natural-idle 30/100-tab distributions, both presentations' final reveal/vis
 | 16 Exact cross-window target | Actual-adapter activation, teardown, return-authority and target-reselection replays pass | Final first-chain Chrome run pending |
 | 17 Current no-op | Source-current drift and preserved-attention tests pass | Final Chrome identities pending |
 | 18 Stale target | Closed/moved/ineligible checks and recoverable-error tests pass | Final Chrome recovery run pending |
-| 19 Coherent initial input | Controller-state tests pass; prior open-idle safe expiration is documented, not seamless continuation | First-frame evidence and timing distributions pending |
+| 19 Coherent initial input | Controller-state tests pass; prior open-idle safe expiration is documented, not seamless continuation | First-frame evidence, early cold-character qualification and timing distributions pending |
 | 20 Appearance/accessibility | Narrow/short, roles and composition tests pass; prior ordinary contrast passes | Both final visual/contrast reviews pending |
 | 21 Closed shortcuts | Local focus/composition guards pass | Corrected-driver and native-control rerun pending |
 | 22 Scope/privacy | Manifest, PNG boundary, all resource-bound tests/mutations pass; prior profile canaries retained | Final Chrome canaries pending |

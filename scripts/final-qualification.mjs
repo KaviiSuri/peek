@@ -13,7 +13,7 @@ export async function qualify(c) {
     waitForOverlayClosed, measureOverlay, activeTabIdentity,
     createInterceptedFixturePage, searchFixtureFacts, fixtureOrigins, activateDisposableChrome,
     getWorkerSession, setWorkerSession, CdpClient } = c;
-  const report = { samples: [], visuals: [], departures: [], limits: [] };
+  const report = { samples: [], visuals: [], departures: [], earlyColdCharacterQualification: 'pending: workload typing is readiness-gated, not an early-input probe', limits: [] };
   const save = () => writeFile(resolve(output, 'final-qualification.json'), JSON.stringify(report, null, 2));
   await client.send('Runtime.evaluate', { expression: `globalThis.qaFocusEvents=[];for(const type of ['focus','blur','visibilitychange','pagehide'])window.addEventListener(type,()=>qaFocusEvents.push({type,at:Date.now(),focused:document.hasFocus(),visibility:document.visibilityState}),true)`, returnByValue: true }, sourceSession);
   await evalWorker(`globalThis.qaBrowserEvents=[];chrome.windows.onFocusChanged.addListener(id=>qaBrowserEvents.push({kind:'focus',id,at:Date.now()}));chrome.tabs.onActivated.addListener(info=>qaBrowserEvents.push({kind:'activation',info,at:Date.now()}))`);
@@ -361,7 +361,7 @@ export async function qualify(c) {
           await reattachIfNeeded();
           const inputAt = Date.now();
           await client.send('Input.insertText', { text: 'g' }, opened.session);
-          assert((await overlayInputState(client, opened.session)).value === 'g', 'First intended character lost');
+          assert((await overlayInputState(client, opened.session)).value === 'g', 'Readiness-gated character lost');
           const characterAt = Date.now();
           await waitFor('full workload delivered', async () => (await overlayResultTabIds(client, opened.session)).length > 0);
           const queryAt = Date.now();
@@ -404,7 +404,9 @@ export async function qualify(c) {
           const cancelReadiness = await focusState(source);
           const readiness = cancellationReadiness(kind === 'overlay' ? sourceChromeTab.windowId : settingsTab.windowId, cancelAfter, cancelReadiness, cancelAt);
           report.samples.push({ count, enumeratedTabCount: before.windows.flatMap(w => w.tabs).length, kind, temperature, index, initialFocus, preGestureFocus, idle,
-            dispatchAt: opened.requestedAt, inputObservedMs: opened.inputObservedAt - opened.requestedAt, firstCharacterRequestedMs: inputAt - opened.requestedAt, firstCharacterObservedMs: characterAt - opened.requestedAt,
+            dispatchAt: opened.requestedAt, inputObservedMs: opened.inputObservedAt - opened.requestedAt,
+            characterProbe: 'readiness-gated: after palette AX readiness and worker attachment; early input not measured',
+            readinessGatedCharacterRequestedMs: inputAt - opened.requestedAt, readinessGatedCharacterObservedMs: characterAt - opened.requestedAt,
             queryOrderMs: orderedAt - queryAt, commitFocusMs: chain.focus.at - commitAt, cancelClosedMs: cancelledAt - cancelAt, cancelIdle, cancelTemperature: temperature, cancelBefore, cancelAfter, cancelReadiness, selected, chain, ...readiness });
           await save();
           async function reattachIfNeeded() { if (temperature === 'natural-idle') await reattach(); }
@@ -413,6 +415,7 @@ export async function qualify(c) {
     }
     await evalWorker(`chrome.tabs.remove(${JSON.stringify(fixtureTabs.map(t => t.id))})`);
   }
+  report.limits.push('Warm/cold workload character samples wait for AX readiness and worker attachment before typing. They do not establish early cold-character preservation. The separate fixed-50ms core probe is retained, is not natural-idle evidence, and is not a universal SLA.');
   report.limits.push('Native posting timestamp excludes compiled-helper startup. DOM/AX observation intervals include CDP polling/attachment; they are not paint latency or a universal SLA. Fallback first paint is not captured before target attachment. Cancel teardown duration is separate from the first collected source-ready observation. Unfocused, hidden or externally departed samples are incomplete, never readiness passes; no restoration is performed inside the measurement. Readiness is not physical IME or global OS shortcut evidence.');
   await save();
   return report;
