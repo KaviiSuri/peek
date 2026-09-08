@@ -246,28 +246,11 @@ export async function qualify(c) {
     assert(fixtureTabs.every(Boolean), 'Workload tab enumeration incomplete');
     const auth = fixtureTabs[10];
     for (const kind of ['overlay', 'fallback']) {
-      // Real timestamped Chrome screencast frames, not rAF or delayed screenshot
-      // names. Ordinary recording begins before gesture. Fallback attachment is
-      // necessarily after target creation; explicitly not its first paint.
+      // Browser trace screenshot events start before invocation. Do not combine
+      // Page screencast and synchronous screenshots in the same focus trial.
       await sourceFocus(kind);
-      let filmSession = sourceSession;
-      const frames = [];
-      let off;
-      const startFilm = async session => {
-        filmSession = session;
-        off = client.on('Page.screencastFrame', (frame, eventSession) => {
-          if (eventSession !== session) return;
-          const index = frames.length;
-          frames.push({ index, timestamp: frame.metadata.timestamp, receivedAt: Date.now(), metadata: frame.metadata });
-          void writeFile(resolve(output, `film-${count}-${kind}-${index}.png`), Buffer.from(frame.data, 'base64'));
-          void client.send('Page.screencastFrameAck', { sessionId: frame.sessionId }, session).catch(() => undefined);
-        });
-        await client.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }, session);
-      };
-      if (kind === 'overlay') await startFilm(sourceSession);
       await client.send('Tracing.start', { categories: 'disabled-by-default-devtools.screenshot', transferMode: 'ReturnAsStream' });
       const visual = await open(kind);
-      if (kind === 'fallback') await startFilm(visual.session);
       await waitFor('workload ready', async () => (await overlayResultTabIds(client, visual.session)).length >= count);
       for (const scheme of ['light', 'dark']) {
         await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] }, visual.session);
@@ -283,8 +266,6 @@ export async function qualify(c) {
           }) });
         }
       }
-      await client.send('Page.stopScreencast', {}, filmSession);
-      off?.();
       const tracingComplete = new Promise(resolveTrace => {
         const remove = client.on('Tracing.tracingComplete', event => { remove(); resolveTrace(event); });
       });
@@ -301,7 +282,6 @@ export async function qualify(c) {
       const snapshots = JSON.parse(traceText).traceEvents.filter(event => event.name === 'Screenshot' && event.args?.snapshot);
       for (const [i, event] of snapshots.entries()) await writeFile(resolve(output, `trace-frame-${count}-${kind}-${i}.jpg`), Buffer.from(event.args.snapshot, 'base64'));
       report.visuals.push({ count, kind, browserTrace: `trace-${count}-${kind}.json`, screenshotEvents: snapshots.map(({ ts, pid, tid }) => ({ ts, pid, tid })), limit: 'Browser tracing started before gesture; screenshot trace events use Chrome monotonic microseconds. Inspect captured content; screenshot sampling may omit frames.' });
-      report.visuals.push({ count, kind, frames, limit: kind === 'overlay' ? 'Chrome screencast samples started before gesture; frames may be dropped/coalesced. Timestamp is Chrome metadata, not rAF.' : 'Chrome screencast attached after popup creation; does not establish its first paint.' });
       await close(visual);
       await save();
       for (const temperature of ['warm', 'natural-idle']) {
