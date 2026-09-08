@@ -319,11 +319,11 @@ export async function qualify(c) {
       const completedTrace = await tracingComplete;
       let traceText = '';
       while (true) {
-        const chunk = await client.send('IO.read', { handle: completedTrace.stream });
+        const chunk = await client.send('IO.read', { handle: completedTrace.stream }, sourceSession);
         traceText += chunk.base64Encoded ? Buffer.from(chunk.data, 'base64').toString() : chunk.data;
         if (chunk.eof) break;
       }
-      await client.send('IO.close', { handle: completedTrace.stream });
+      await client.send('IO.close', { handle: completedTrace.stream }, sourceSession);
       await writeFile(resolve(output, `trace-${count}-${kind}.json`), traceText);
       const snapshots = JSON.parse(traceText).traceEvents.filter(event => event.name === 'Screenshot' && event.args?.snapshot);
       for (const [i, event] of snapshots.entries()) await writeFile(resolve(output, `trace-frame-${count}-${kind}-${i}.jpg`), Buffer.from(event.args.snapshot, 'base64'));
