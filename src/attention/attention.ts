@@ -127,10 +127,36 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
     return result;
   };
 
+  let desiredSave: AttentionState | undefined;
+  let acknowledgedSave: string | undefined;
+  let saving = false;
+  const flushSave = async (): Promise<void> => {
+    if (saving) return;
+    saving = true;
+    try {
+      while (desiredSave) {
+        const next = desiredSave;
+        desiredSave = undefined;
+        try {
+          // A timeout cannot cancel storage.set. Serialize writes and retain
+          // only the latest desired snapshot while a write is outstanding.
+          await adapter.saveAttentionState(next);
+          acknowledgedSave = JSON.stringify(next);
+        } catch {
+          if (desiredSave && JSON.stringify(desiredSave) !== JSON.stringify(next)) continue;
+          desiredSave = next;
+          return; // Retry on the next observation/prepare, not in a busy loop.
+        }
+        if (desiredSave && JSON.stringify(desiredSave) === acknowledgedSave) desiredSave = undefined;
+      }
+    } finally {
+      saving = false;
+    }
+  };
   const persist = async (next: AttentionState): Promise<void> => {
-    if (JSON.stringify(next) === JSON.stringify(state)) return;
     state = next;
-    await bounded(adapter.saveAttentionState(state));
+    desiredSave = saving || JSON.stringify(next) !== acknowledgedSave ? next : undefined;
+    void flushSave();
   };
 
   const recalculate = (): Promise<void> => scheduleUpdate(async () => {
@@ -182,7 +208,7 @@ export function createAttentionTracker(adapter: AttentionAdapter): AttentionTrac
       const stored = await bounded(adapter.loadAttentionState());
       state = decodeAttentionState(stored);
       baseState = state;
-      await bounded(adapter.saveAttentionState(state));
+      await persist(state);
     })();
   }
 

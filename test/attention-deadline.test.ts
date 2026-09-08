@@ -25,6 +25,50 @@ it("does not discard newly delivered attention while an older save is pending", 
   expect(saved.at(-1)).toEqual({ version: 1, current: { tabId: 3, windowId: 3 }, previous: { tabId: 2, windowId: 2 } });
 });
 
+it("coalesces writes behind an outstanding save and restores the latest previous identity", async () => {
+  let storage: unknown = { version: 1, current: { tabId: 1, windowId: 10 } };
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let done!: () => void;
+  const latestSaved = new Promise<void>(resolve => { done = resolve; });
+  const adapter = {
+    async loadAttentionState() { return storage; },
+    async resolveFocusedAttention() { return undefined; },
+    async saveAttentionState(state: import('../src/attention/attention').AttentionState) {
+      if (state.current?.tabId === 2) await gate;
+      storage = state;
+      if (state.current?.tabId === 4) done();
+    },
+  };
+  const tabs = [1, 2, 3, 4].map(id => ({ id, windowId: 10, title: String(id), url: 'https://fixture.test', lastAccessed: id, current: false }));
+  const tracker = createAttentionTracker(adapter);
+  for (const id of [2, 3, 4]) await tracker.prepareTabs({ id, windowId: 10 }, tabs);
+  release();
+  await latestSaved;
+  const restored = await createAttentionTracker(adapter).prepareTabs({ id: 4, windowId: 10 }, tabs);
+  expect(restored.find(tab => tab.previous)?.id).toBe(3);
+  expect(storage).toEqual({ version: 1, current: { tabId: 4, windowId: 10 }, previous: { tabId: 3, windowId: 10 } });
+});
+
+it("retries failed persistence even when the in-memory state is unchanged", async () => {
+  let failed = false;
+  let stored: unknown;
+  const adapter = {
+    async loadAttentionState() { return undefined; },
+    async resolveFocusedAttention() { return undefined; },
+    async saveAttentionState(state: import('../src/attention/attention').AttentionState) {
+      if (state.current && !failed) { failed = true; throw new Error('temporary storage failure'); }
+      stored = state;
+    },
+  };
+  const tracker = createAttentionTracker(adapter);
+  const tabs = [{ id: 2, windowId: 10, title: 'Source', url: 'https://fixture.test', lastAccessed: 0, current: true }];
+  await tracker.prepareTabs({ id: 2, windowId: 10 }, tabs);
+  await tracker.prepareTabs({ id: 2, windowId: 10 }, tabs);
+  expect(failed).toBe(true);
+  expect(stored).toEqual({ version: 1, current: { tabId: 2, windowId: 10 } });
+});
+
 it("releases a hung observation and ignores its late answer instead of retaining pending history", async () => {
   vi.useFakeTimers();
   let release!: (identity: { tabId: number; windowId: number }) => void;

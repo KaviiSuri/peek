@@ -7,9 +7,9 @@ const tab = { id: 1, windowId: 2, title: "Orion", url: "https://github.com/acme/
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("worker favicon request boundary", () => {
-  it("fetches only the extension-owned endpoint with no referrer and emits bounded PNG data", async () => {
+  it.each([true, false])("fetches only the extension-owned endpoint and verifies PNG bytes with Content-Type present=%s", async (hasContentType) => {
     vi.stubGlobal("chrome", { runtime: { getURL: (path: string) => `chrome-extension://peek/${path}` } });
-    const fetcher = vi.fn(async () => new Response(png, { headers: { "content-type": "image/png" } }));
+    const fetcher = vi.fn(async () => new Response(png, hasContentType ? { headers: { "content-type": "image/png" } } : {}));
     vi.stubGlobal("fetch", fetcher);
     const result = await withBrowserFavicons([tab]);
     const [url, options] = fetcher.mock.calls[0] as unknown as [URL, RequestInit];

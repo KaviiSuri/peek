@@ -130,6 +130,38 @@ export async function qualify(c) {
   }
   await save();
 
+  report.failureRecovery = [];
+  for (const kind of ['overlay', 'fallback']) {
+    await sourceFocus(kind);
+    await evalWorker(`globalThis.qaGetAll=chrome.windows.getAll.bind(chrome.windows);chrome.windows.getAll=async()=>{throw new Error('controlled enumeration failure')}`);
+    const failed = await open(kind);
+    await waitFor('deliberate model error', async () => (await client.send('Accessibility.getFullAXTree', {}, failed.session)).nodes.some(node => node.name?.value?.includes('Peek could not read open tabs')));
+    const errorGeometry = await measureOverlay(client, failed.session);
+    await capture(client, failed.session, `error-${kind}.png`);
+    await evalWorker('chrome.windows.getAll=qaGetAll;delete globalThis.qaGetAll');
+    await close(failed);
+    await sourceFocus(kind);
+    const recovered = await open(kind);
+    await waitFor('recovered model', async () => (await overlayResultTabIds(client, recovered.session)).length > 0);
+    await close(recovered);
+    await sourceFocus(kind);
+    const beforePending = await browserState();
+    await evalWorker(`globalThis.qaGetAll=chrome.windows.getAll.bind(chrome.windows);globalThis.qaModelPending=false;chrome.windows.getAll=async(...args)=>{const result=await qaGetAll(...args);qaModelPending=true;await new Promise(resolve=>globalThis.qaReleaseModel=resolve);return result}`);
+    const pending = await open(kind);
+    await waitFor('pending real model boundary', () => evalWorker('qaModelPending'));
+    const loadingGeometry = await measureOverlay(client, pending.session);
+    await close(pending);
+    await evalWorker('chrome.windows.getAll=qaGetAll;qaReleaseModel();delete globalThis.qaGetAll;delete globalThis.qaReleaseModel');
+    await delay(150);
+    const afterPending = await browserState();
+    assert(JSON.stringify(activeTabIdentity(beforePending)) === JSON.stringify(activeTabIdentity(afterPending)), 'Pending model cancellation activated a tab');
+    assert(afterPending.lastFocusedWindowId === beforePending.lastFocusedWindowId, 'Pending model cancellation moved focus');
+    assert(!afterPending.windows.some(w => w.type === 'popup'), 'Late fallback model resurrected a popup');
+    assert(await evaluate(sourceSession, "!document.querySelector('#peek-extension-host')"), 'Late ordinary model resurrected a host');
+    report.failureRecovery.push({ kind, errorGeometry, loadingGeometry, modelErrorRecovered: true, pendingCancellation: { before: beforePending, after: afterPending, lateObservationMs: 150 } });
+    await save();
+  }
+
   // Two real disposable profile boundaries, with canary target existence
   // independently established through each owned debugging connection.
   const secondProfile = `${profile}-second`;
@@ -287,7 +319,16 @@ export async function qualify(c) {
           const selectedTab = fixtureTabs.find(tab => tab.id === selected);
           assert(after.lastFocusedWindowId === selectedTab.windowId && after.windows.find(w => w.id === selectedTab.windowId)?.tabs.some(t => t.id === selected && t.active), 'Commit identities do not match');
           await sourceFocus(kind);
-          const cancelling = await open(kind);
+          let cancelIdle;
+          if (temperature === 'natural-idle') {
+            const detachedAt = Date.now();
+            await client.send('Target.detachFromTarget', { sessionId: getWorkerSession() });
+            await waitFor('natural idle before cancellation sample', async () => !(await targets(client)).some(t => t.type === 'service_worker' && t.url.startsWith(workerUrl)), 70000);
+            cancelIdle = { detachedAt, absentAt: Date.now(), preGestureFocus: await focusState(source), forcedStop: false };
+            assert(cancelIdle.preGestureFocus.focused, 'Cold cancel source lost focus; do not relabel a focus-woken sample');
+          }
+          const cancelling = await open(kind, temperature === 'natural-idle');
+          if (temperature === 'natural-idle') await reattach();
           const cancelBefore = await browserState();
           const cancelAt = Date.now();
           await close(cancelling);
@@ -297,7 +338,7 @@ export async function qualify(c) {
           assert(cancelAfter.lastFocusedWindowId === (kind === 'overlay' ? sourceChromeTab.windowId : settingsTab.windowId), 'Cancellation focus changed');
           report.samples.push({ count, enumeratedTabCount: before.windows.flatMap(w => w.tabs).length, kind, temperature, index, initialFocus, preGestureFocus, idle,
             dispatchAt: opened.requestedAt, inputObservedMs: opened.inputObservedAt - opened.requestedAt, firstCharacterRequestedMs: inputAt - opened.requestedAt, firstCharacterObservedMs: characterAt - opened.requestedAt,
-            queryOrderMs: orderedAt - queryAt, commitFocusMs: chain.focus.at - commitAt, cancelClosedMs: cancelledAt - cancelAt, cancelReadiness: await focusState(source), selected, chain, outcome: 'pass' });
+            queryOrderMs: orderedAt - queryAt, commitFocusMs: chain.focus.at - commitAt, cancelClosedMs: cancelledAt - cancelAt, cancelIdle, cancelTemperature: temperature, cancelReadiness: await focusState(source), selected, chain, outcome: 'pass' });
           await save();
           async function reattachIfNeeded() { if (temperature === 'natural-idle') await reattach(); }
         }

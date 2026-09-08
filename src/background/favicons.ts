@@ -20,7 +20,10 @@ export async function withBrowserFavicons(tabs: readonly PeekTab[]): Promise<rea
           url.searchParams.set("pageUrl", tab.url);
           url.searchParams.set("size", "32");
           const response = await fetch(url, { signal: controller.signal, credentials: "omit", referrerPolicy: "no-referrer" });
-          if (!response.ok || response.headers.get("content-type")?.split(";")[0] !== "image/png") continue;
+          // Chrome's _favicon response may omit Content-Type. The endpoint is
+          // browser-owned; require the PNG signature below in either case.
+          const contentType = response.headers.get("content-type")?.split(";")[0];
+          if (!response.ok || (contentType !== undefined && contentType !== "image/png")) continue;
           const bytes = new Uint8Array(await response.arrayBuffer());
           if (bytes.length > MAX_ICON_BYTES || bytes.length < 8 ||
             ![137, 80, 78, 71, 13, 10, 26, 10].every((value, i) => bytes[i] === value)) continue;
