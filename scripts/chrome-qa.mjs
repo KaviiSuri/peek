@@ -232,8 +232,8 @@ async function waitForOverlayClosed(client, sessionId) {
 
 async function press(client, sessionId, key, code = key, modifiers = 0) {
   const keyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowLeft: 37, ArrowDown: 40, ArrowUp: 38, j: 74, k: 75, " ": 32 }[key] ?? key.toUpperCase().charCodeAt(0);
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers, windowsVirtualKeyCode: keyCode }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers, windowsVirtualKeyCode: keyCode }, sessionId);
 }
 
 async function capture(client, sessionId, name) {
@@ -330,8 +330,8 @@ async function selectedOverlayTabId(client, sessionId) {
 }
 
 async function replaceOverlayQuery(client, sessionId, query) {
-  await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, commands: ["SelectAll"] }, sessionId);
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, commands: ["SelectAll"] }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65 }, sessionId);
   if (query) {
     await client.send("Input.insertText", { text: query }, sessionId);
   } else {

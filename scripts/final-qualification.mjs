@@ -293,7 +293,7 @@ export async function qualify(c) {
       // Browser trace screenshot events start before invocation. Do not combine
       // Page screencast and synchronous screenshots in the same focus trial.
       await sourceFocus(kind);
-      await client.send('Tracing.start', { categories: 'disabled-by-default-devtools.screenshot', transferMode: 'ReturnAsStream' });
+      await client.send('Tracing.start', { categories: 'devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.screenshot', transferMode: 'ReturnAsStream' }, sourceSession);
       const visual = await open(kind);
       await waitFor('workload ready', async () => (await overlayResultTabIds(client, visual.session)).length >= count);
       await finishTrace();
@@ -315,7 +315,7 @@ export async function qualify(c) {
       const tracingComplete = new Promise(resolveTrace => {
         const remove = client.on('Tracing.tracingComplete', event => { remove(); resolveTrace(event); });
       });
-      await client.send('Tracing.end');
+      await client.send('Tracing.end', {}, sourceSession);
       const completedTrace = await tracingComplete;
       let traceText = '';
       while (true) {
@@ -370,7 +370,7 @@ export async function qualify(c) {
           const selected = ordered[0];
           assert(fixtureTabs.filter((_, i) => i % 30 === 10).some(tab => tab.id === selected), 'PR880 not first in workload query');
           const orderedAt = Date.now();
-          await evalWorker(`(() => { globalThis.qualificationChain=[]; if(globalThis.qualificationWrapped)return;globalThis.qualificationWrapped=true; for (const [name,obj] of [['tab',chrome.tabs],['window',chrome.windows]]) { const original=obj.update.bind(obj); obj.update=(...args)=>{const p=original(...args);void p.then(()=>qualificationChain.push({name,args,at:Date.now()}),error=>qualificationChain.push({name:'error',error:String(error)}));return p;}; } )()`);
+          await evalWorker(`(() => { globalThis.qualificationChain=[]; if(globalThis.qualificationWrapped)return;globalThis.qualificationWrapped=true; for (const [name,obj] of [['tab',chrome.tabs],['window',chrome.windows]]) { const original=obj.update.bind(obj); obj.update=(...args)=>{const p=original(...args);void p.then(()=>qualificationChain.push({name,args,at:Date.now()}),error=>qualificationChain.push({name:'error',error:String(error)}));return p;}; } })()`);
           const commitAt = Date.now();
           void press(client, opened.session, 'Enter').catch(() => undefined);
           const chain = (await waitFor('first completed qualification activation/focus chain', async () => {
