@@ -1306,7 +1306,10 @@ async function main() {
       assert(state.windows.find((window) => window.id === nativeRestrictedTab.windowId)?.focused, "Fresh restricted native source not focused");
       assert(!state.windows.some((window) => window.type === "popup"), "Unexpected popup before native restricted invocation");
       const target = sendTargetedNativeControlSpace(chrome);
-      const page = (await waitFor("native restricted fallback", async () => (await targets(client, "page")).find((candidate) => candidate.url.startsWith(`chrome-extension://${extensionId}/fallback.html#`)), 10000)).value;
+      const page = (await waitFor("native restricted fallback", async () => (await targets(client, "page")).find((candidate) => candidate.url.startsWith(`chrome-extension://${extensionId}/fallback.html#`)), 10000).catch(async (error) => {
+        await writeFile(resolve(output, "native-restricted-failure.json"), JSON.stringify({ target, source: nativeRestrictedTab, state: await browserState(), trace: await evalWorker("peekFallbackTrace"), actionTitle: await evalWorker(`chrome.action.getTitle({tabId:${nativeRestrictedTab.id}})`), pages: await targets(client, "page") }, null, 2));
+        throw error;
+      })).value;
       const session = await attach(client, page.targetId);
       await waitForOverlay(client, session);
       const selected = await waitForSelectedOverlayTabId(client, session, "native restricted first delivered selection");
