@@ -135,7 +135,7 @@ async function startFixtureServer() {
       const info = await stat(file);
       if (!info.isFile()) throw new Error("not a file");
       response.writeHead(200, {
-        "content-type": extname(file) === ".html" ? "text/html; charset=utf-8" : extname(file) === ".svg" ? "image/svg+xml" : "application/octet-stream",
+        "content-type": extname(file) === ".html" ? "text/html; charset=utf-8" : extname(file) === ".svg" ? "image/svg+xml" : extname(file) === ".pdf" ? "application/pdf" : "application/octet-stream",
         "cache-control": "no-store",
       });
       createReadStream(file).pipe(response);

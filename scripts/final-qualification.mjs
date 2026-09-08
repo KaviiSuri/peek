@@ -14,6 +14,8 @@ export async function qualify(c) {
     getWorkerSession, setWorkerSession, CdpClient } = c;
   const report = { samples: [], visuals: [], departures: [], limits: [] };
   const save = () => writeFile(resolve(output, 'final-qualification.json'), JSON.stringify(report, null, 2));
+  await client.send('Runtime.evaluate', { expression: `globalThis.qaFocusEvents=[];for(const type of ['focus','blur','visibilitychange','pagehide'])window.addEventListener(type,()=>qaFocusEvents.push({type,at:Date.now(),focused:document.hasFocus(),visibility:document.visibilityState}),true)`, returnByValue: true }, sourceSession);
+  await evalWorker(`globalThis.qaBrowserEvents=[];chrome.windows.onFocusChanged.addListener(id=>qaBrowserEvents.push({kind:'focus',id,at:Date.now()}));chrome.tabs.onActivated.addListener(info=>qaBrowserEvents.push({kind:'activation',info,at:Date.now()}))`);
   const evaluate = async (session, expression) => {
     const result = await client.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, session);
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
@@ -196,6 +198,38 @@ export async function qualify(c) {
   }
   await save();
 
+  const pdfUrl = new URL('/source.pdf', sourceUrl).href;
+  const pdfPage = await client.send('Target.createTarget', { url: pdfUrl });
+  const pdfSession = await attach(client, pdfPage.targetId);
+  await client.send('Page.enable', {}, pdfSession);
+  const pdfTab = (await waitFor('synthetic PDF tab', async () => (await evalWorker('chrome.tabs.query({})')).find(tab => tab.url === pdfUrl))).value;
+  await evalWorker(`chrome.tabs.update(${pdfTab.id},{active:true}).then(()=>chrome.windows.update(${pdfTab.windowId},{focused:true}))`);
+  activateDisposableChrome(chrome);
+  await client.send('Page.bringToFront', {}, pdfSession);
+  const contentType = await evaluate(pdfSession, 'document.contentType');
+  assert(contentType === 'application/pdf', 'PDF fixture was not handled as PDF');
+  const pdfBefore = await browserState();
+  const pdfPostedAt = native();
+  const pdfSurface = (await waitFor('usable PDF presentation', async () => {
+    if (await evaluate(pdfSession, "!!document.querySelector('#peek-extension-host')")) return { session: pdfSession, kind: 'overlay' };
+    const popup = (await targets(client, 'page')).find(t => t.url.startsWith(`${workerUrl}fallback.html#`));
+    return popup ? { session: await attach(client, popup.targetId), page: popup, kind: 'fallback' } : undefined;
+  }).catch(async error => {
+    report.pdf = { url: pdfUrl, contentType, postedAt: pdfPostedAt, state: await browserState(), actionTitle: await evalWorker(`chrome.action.getTitle({tabId:${pdfTab.id}})`), probe: await evalWorker(`chrome.scripting.executeScript({target:{tabId:${pdfTab.id}},func:()=>document.contentType}).then(value=>({value}),error=>({error:String(error)}))`) };
+    await save();
+    throw error;
+  })).value;
+  await waitForOverlay(client, pdfSurface.session);
+  await client.send('Input.insertText', { text: 'peek' }, pdfSurface.session);
+  assert((await overlayInputState(client, pdfSurface.session)).value === 'peek', 'PDF presentation did not accept query');
+  await capture(client, pdfSurface.session, 'pdf-presentation.png');
+  await close(pdfSurface);
+  const pdfAfter = await browserState();
+  assert(JSON.stringify(activeTabIdentity(pdfBefore)) === JSON.stringify(activeTabIdentity(pdfAfter)) && pdfBefore.lastFocusedWindowId === pdfAfter.lastFocusedWindowId, 'PDF Escape changed identity/focus');
+  report.pdf = { url: pdfUrl, contentType, presentation: pdfSurface.kind, postedAt: pdfPostedAt, typedQuery: 'peek', before: pdfBefore, after: pdfAfter };
+  await client.send('Target.closeTarget', { targetId: pdfPage.targetId });
+  await save();
+
   // Keep the original three-window clipping controls above; workload sizes here
   // count the ambiguity fixture, with source/Settings controls listed separately.
   for (const count of [30, 100]) {
@@ -242,7 +276,11 @@ export async function qualify(c) {
           await capture(client, visual.session, `workload-${count}-${kind}-${scheme}-${query.replaceAll(' ', '-')}.png`);
           const contrast = await selectedContrast(visual.session);
           assert(!contrast || contrast.pathContrast >= 4.5, 'Selected path contrast below 4.5:1');
-          report.visuals.push({ count, kind, scheme, query, contrast, geometry: await measureOverlay(client, visual.session) });
+          report.visuals.push({ count, kind, scheme, query, contrast, geometry: await measureOverlay(client, visual.session).catch(async error => {
+            report.visualFailure = { count, kind, scheme, query, at: Date.now(), focusEvents: await evaluate(sourceSession, 'qaFocusEvents'), browserEvents: await evalWorker('qaBrowserEvents'), state: await browserState() };
+            await save();
+            throw error;
+          }) });
         }
       }
       await client.send('Page.stopScreencast', {}, filmSession);
