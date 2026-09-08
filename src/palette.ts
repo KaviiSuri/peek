@@ -91,6 +91,10 @@ const styles = `
     .search { padding-inline: 10px; gap: 8px; }
     .count { font-size: 10px; }
   }
+  @media (max-width: 240px) {
+    .search svg { display: none; }
+    .count { max-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
   @media (max-height: 180px) {
     .backdrop { padding-block: 4px; }
     .palette { height: calc(100vh - 8px); border-radius: 8px; }
@@ -257,7 +261,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
         input.setAttribute("aria-keyshortcuts", selecting
           ? "Tab ArrowUp ArrowDown J K Enter 1 2 3 4 5 6 7 8 9 Escape"
           : "Tab ArrowUp ArrowDown Enter Escape");
-        modeHint.textContent = selecting ? "Select · 1–9 visible" : "Type · Tab to select";
+        modeHint.textContent = !canShowResults() ? "Resize window to select" : selecting ? "Select · 1–9 visible" : "Type · Tab to select";
         palette.dataset.mode = state.mode;
       }
 
@@ -433,7 +437,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
           if (host && shadow.activeElement === null) cancel(false);
         }, 0);
       };
-      const handleResize = () => { syncAvailableSpace(); refreshVisibleDigits(); };
+      const handleResize = () => { syncMode(); syncAvailableSpace(); refreshVisibleDigits(); };
       window.addEventListener("resize", handleResize);
       input.addEventListener("focusin", handleFocusIn);
       input.addEventListener("focusout", handleFocusOut);

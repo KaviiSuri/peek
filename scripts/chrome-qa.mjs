@@ -1217,7 +1217,7 @@ async function main() {
     assert(fallbackRestoredCaret.value === "settings2" && fallbackRestoredCaret.selectionStart === 1 && fallbackRestoredCaret.selectionEnd === 5 && fallbackRestoredCaret.selectionDirection === "backward", "Fallback query/caret round trip lost the exact selection");
     await replaceOverlayQuery(client, firstFallback.session, "");
     const tinyFallbackGeometry = [];
-    for (const { width, height } of [{ width: 358, height: 148 }, { width: 358, height: 74 }, { width: 236, height: 189 }]) {
+    for (const { width, height } of [{ width: 358, height: 148 }, { width: 358, height: 74 }, { width: 236, height: 189 }, { width: 175, height: 189 }, { width: 175, height: 74 }]) {
       await client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile: false }, firstFallback.session);
       const geometry = await measureOverlay(client, firstFallback.session);
       await capture(client, firstFallback.session, `19-fallback-compact-${width}x${height}.png`);
@@ -1230,7 +1230,7 @@ async function main() {
       assert(labelled.length > 0 && (height !== 74 || labelled.length === 1), `Compact fallback has no coherent visible digit at ${height}px`);
       await press(client, firstFallback.session, "Tab");
     }
-    await client.send("Emulation.setDeviceMetricsOverride", { width: 358, height: 60, deviceScaleFactor: 2, mobile: false }, firstFallback.session);
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 175, height: 60, deviceScaleFactor: 2, mobile: false }, firstFallback.session);
     const tinyNoResultsBefore = await browserState();
     await press(client, firstFallback.session, "Enter");
     await press(client, firstFallback.session, "Tab");
@@ -1379,7 +1379,7 @@ async function main() {
       exclusion: { fallbackTabId: fallbackTab.id, absentFromResultIds: true, attentionWhileOpen: attentionWhileFallback },
       currentNoOpAttention: { before: currentAttentionBefore, after: currentAttentionAfter },
       changedBehindPopup: { before: changedSourceBefore, firstCompletedCommit: changedSourceCommit.value, after: changedSourceAfter },
-      compactGeometry: { reproducedCssViewports: tinyFallbackGeometry, inputOnlyGeometry: tinyNoResultsGeometry, hiddenCommitBefore: tinyNoResultsBefore, hiddenCommitAfter: tinyNoResultsAfter, limit: "Device metrics explicitly reproduce 358x74 CSS pixels at DPR2 (716x148 screenshot), plus 358x148, narrow 236x189 and input-only 358x60. The later native run retains its original three-normal-window pressure without emulation." },
+      compactGeometry: { reproducedCssViewports: tinyFallbackGeometry, inputOnlyGeometry: tinyNoResultsGeometry, hiddenCommitBefore: tinyNoResultsBefore, hiddenCommitAfter: tinyNoResultsAfter, limit: "Device metrics explicitly reproduce 358x74 CSS pixels at DPR2 (716x148 screenshot), plus 358x148, narrow 236x189 and 175x189, 175x74, and input-only 175x60. The later native run retains its original three-normal-window pressure without emulation." },
       keyboard: { initialIds: fallbackInitialIds, restoredCaret: fallbackRestoredCaret, composition: fallbackComposing, numericRows: fallbackNumericRows, numericCommittedId: settingsTab.id, compositionLimit: "CDP Chrome composition events, not physical OS IME candidate UI" },
     };
 
@@ -1511,7 +1511,7 @@ async function main() {
         restrictedFallback: "pass: chrome://settings and HTTPS Chrome Web Store used transient extension windows while ordinary HTTPS remained overlay-injectable",
         fallbackParityAndCleanup: "pass: shared palette model/keyboard route, self-exclusion, exact current/cross-window commits, Escape, focus-away, browser-close and clean reinvocation",
         fileCapabilities: "pass: granted synthetic file stays overlay; disposable-only denied file rejects injection and opens fallback",
-        fallbackConstrainedViewports: "pass: 358x74, 358x148 and 236x189 retain usable input and a full selected row; 358x60 hides rows and cannot commit hidden choices",
+        fallbackConstrainedViewports: "pass: 358x74, 358x148, 236x189, 175x189 and 175x74 retain usable input and a full selected row; 175x60 hides rows and cannot commit hidden choices",
         pendingCommitEscape: "pass with real Chrome key events while the extension worker was paused; focused input stayed operable and active-tab identities were preserved",
         titleUrlFilter: "pass",
         imperfectClueSearch: "pass: 30-tab ambiguity fixture covered repository home, cross-field PR number, dropped characters, case, honest miss, explicit postmortem and exact result commit",
