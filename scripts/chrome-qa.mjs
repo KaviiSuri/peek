@@ -492,6 +492,7 @@ async function main() {
   ], { stdio: "ignore" });
 
   let client;
+  let failureDiagnostics;
   const fallbackPageEvents = [];
   try {
     const debuggerPort = await waitForDebuggerPort();
@@ -614,6 +615,7 @@ async function main() {
 
     const stateExpression = `Promise.all([chrome.windows.getAll({populate:true}),chrome.windows.getLastFocused({populate:true})]).then(([windows,last])=>({lastFocusedWindowId:last.id,windows:windows.map(w=>({id:w.id,focused:w.focused,type:w.type,incognito:w.incognito,left:w.left,top:w.top,width:w.width,height:w.height,tabs:(w.tabs||[]).map(t=>({id:t.id,active:t.active,title:t.title,url:t.url}))}))}))`;
     const browserState = async () => ({ ...await evalWorker(stateExpression), observedAt: new Date().toISOString() });
+    failureDiagnostics = async () => writeFile(resolve(output, 'failure-state.json'), JSON.stringify({ state: await browserState(), fallbackTrace: await evalWorker('globalThis.peekFallbackTrace ?? []'), frontmost: execFileSync('/usr/bin/swift', ['-e', 'import AppKit; let a=NSWorkspace.shared.frontmostApplication; print(a?.processIdentifier ?? 0); print(a?.localizedName ?? "unknown")'], { encoding: 'utf8' }), chromePid: chrome.pid }, null, 2));
     const attentionState = () => evalWorker("chrome.storage.session.get('peekAttentionV1').then(value=>value.peekAttentionV1)");
     const waitForAttention = (label, predicate) => waitFor(label, async () => {
       const state = await attentionState();
@@ -1578,6 +1580,9 @@ async function main() {
     await writeFile(resolve(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
     console.log(JSON.stringify(report, null, 2));
     console.log(`Evidence: ${output}`);
+  } catch (error) {
+    await failureDiagnostics?.().catch(() => undefined);
+    throw error;
   } finally {
     await writeFile(resolve(output, "fallback-page-events.json"), JSON.stringify(fallbackPageEvents, null, 2));
     if (client) {
