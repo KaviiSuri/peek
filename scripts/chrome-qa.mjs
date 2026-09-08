@@ -1148,6 +1148,7 @@ async function main() {
     const manager = await client.send("Target.createTarget", { url: `chrome://extensions/?id=${extensionId}` });
     const managerSession = await attach(client, manager.targetId);
     await waitFor("disposable extension-management API", async () => (await client.send("Runtime.evaluate", { expression: "typeof chrome.developerPrivate?.updateExtensionConfiguration === 'function'", returnByValue: true }, managerSession)).result.value);
+    await evalWorker('globalThis.qaBeforeFileReload = true');
     await client.send("Target.detachFromTarget", { sessionId: workerSession });
     const updateFileGrant = await client.send("Runtime.evaluate", {
       expression: `new Promise((resolve,reject)=>chrome.developerPrivate.updateExtensionConfiguration({extensionId:${JSON.stringify(extensionId)},fileAccess:false},()=>chrome.runtime.lastError?reject(new Error(chrome.runtime.lastError.message)):resolve(true)))`,
@@ -1160,10 +1161,11 @@ async function main() {
       awaitPromise: true, returnByValue: true, userGesture: true,
     }, managerSession);
     assert(reenabled.result.value === true && !reenabled.exceptionDetails, "Could not re-enable the disposable extension after file capability change");
-    const fileWorker = await waitFor("worker after disposable file capability change", async () => (await targets(client)).find((target) => target.type === "service_worker" && target.targetId !== workerTargetId && target.url.startsWith(`chrome-extension://${extensionId}/`)));
+    const fileWorker = await waitFor("worker after disposable file capability change", async () => (await targets(client)).find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)));
     workerTargetId = fileWorker.value.targetId;
     workerSession = await attach(client, workerTargetId);
     await waitFor("Chrome APIs after file capability restart", () => evalWorker("typeof chrome !== 'undefined' && typeof chrome.extension?.isAllowedFileSchemeAccess === 'function'"));
+    assert(await evalWorker('globalThis.qaBeforeFileReload === undefined'), 'File capability change did not restart the worker global');
     const deniedFileAccess = await evalWorker("chrome.extension.isAllowedFileSchemeAccess()");
     assert(deniedFileAccess === false, "Disposable file capability was not denied");
     await evalWorker(`chrome.tabs.update(${fileTab.id},{active:true}).then(()=>chrome.windows.update(${fileTab.windowId},{focused:true}))`);
