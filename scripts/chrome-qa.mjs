@@ -1103,6 +1103,7 @@ async function main() {
     const injectionProbe = (tabId) => evalWorker(`chrome.scripting.executeScript({target:{tabId:${tabId}},func:()=>true}).then(()=>({ok:true}),error=>({ok:false,error:String(error?.message||error)}))`);
     const openFallback = async (tabTargetId, label) => {
       console.log(`Fallback QA: ${label}`);
+      activateDisposableChrome(chrome);
       const existing = new Set((await targets(client, "page")).map((target) => target.targetId));
       await client.send("Extensions.triggerAction", { id: extensionId, targetId: tabTargetId });
       const page = await waitFor(`${label} fallback page`, async () => (await targets(client, "page")).find((target) =>

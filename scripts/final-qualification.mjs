@@ -43,6 +43,7 @@ export async function qualify(c) {
     else await evalWorker(`chrome.tabs.update(${settingsTab.id},{active:true}).then(()=>chrome.windows.update(${settingsTab.windowId},{focused:true}))`);
     activateDisposableChrome(chrome);
     await client.send('Page.bringToFront', {}, kind === 'overlay' ? sourceSession : settingsSession);
+    await delay(250);
     await waitFor('qualification source focus', async () => (await focusState(kind === 'overlay' ? sourceSession : settingsSession)).focused);
   };
   // Compile before measurements. The marker is immediately before native event
@@ -261,7 +262,7 @@ export async function qualify(c) {
           const contrast = await selectedContrast(visual.session);
           assert(!contrast || contrast.pathContrast >= 4.5, 'Selected path contrast below 4.5:1');
           report.visuals.push({ count, kind, scheme, query, contrast, geometry: await measureOverlay(client, visual.session).catch(async error => {
-            report.visualFailure = { count, kind, scheme, query, at: Date.now(), focusEvents: await evaluate(sourceSession, 'qaFocusEvents'), browserEvents: await evalWorker('qaBrowserEvents'), state: await browserState() };
+            report.visualFailure = { count, kind, scheme, query, at: Date.now(), frontmost: execFileSync('/usr/bin/swift', ['-e', 'import AppKit; let a=NSWorkspace.shared.frontmostApplication; print(a?.processIdentifier ?? 0); print(a?.localizedName ?? "unknown")'], { encoding: 'utf8' }), chromePid: chrome.pid, focusEvents: await evaluate(sourceSession, 'qaFocusEvents'), browserEvents: await evalWorker('qaBrowserEvents'), state: await browserState() };
             await save();
             throw error;
           }) });
