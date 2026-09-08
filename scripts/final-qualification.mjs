@@ -109,6 +109,10 @@ export async function qualify(c) {
       };
       visit(tree.root);
       return icons.length ? icons : undefined;
+    }).catch(async error => {
+      const diagnostic = await evalWorker(`(async()=>{const tab=await chrome.tabs.get(${sourceChromeTab.id});const u=new URL(chrome.runtime.getURL('_favicon/'));u.searchParams.set('pageUrl',tab.url);u.searchParams.set('size','32');try{const r=await fetch(u);const b=new Uint8Array(await r.arrayBuffer());return {tab,endpoint:u.href,status:r.status,type:r.headers.get('content-type'),length:b.length,firstBytes:Array.from(b.slice(0,12)),permissions:await chrome.permissions.getAll()}}catch(error){return {tab,endpoint:u.href,error:String(error)}}})()`);
+      await writeFile(resolve(output, `favicon-diagnostic-${kind}.json`), JSON.stringify(diagnostic, null, 2));
+      throw error;
     })).value;
     await client.send('Network.enable', {}, surface.session);
     const requests = [];
