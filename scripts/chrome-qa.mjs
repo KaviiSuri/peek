@@ -1158,6 +1158,10 @@ async function main() {
     }, managerSession);
     assert(updateFileGrant.result.value === true && !updateFileGrant.exceptionDetails, "Could not revoke only the disposable extension's file grant");
     // Chrome disables the CDP-loaded extension on this configuration update.
+    // Wait for that teardown before reenabling; attaching to a dying worker can
+    // leave Runtime.evaluate waiting on its obsolete target/session.
+    await waitFor('disposable extension disabled for file capability reload', async () => (await client.send('Extensions.getExtensions')).extensions.find(extension => extension.id === extensionId)?.enabled === false);
+    await waitFor('old file-capability worker removed', async () => !(await targets(client)).some(target => target.type === 'service_worker' && target.url.startsWith(`chrome-extension://${extensionId}/`)));
     const reenabled = await client.send("Runtime.evaluate", {
       expression: `new Promise((resolve,reject)=>chrome.management.setEnabled(${JSON.stringify(extensionId)},true,()=>chrome.runtime.lastError?reject(new Error(chrome.runtime.lastError.message)):resolve(true)))`,
       awaitPromise: true, returnByValue: true, userGesture: true,
