@@ -54,10 +54,12 @@ describe("ordinary-page overlay", () => {
     expect(sent).toContainEqual({ kind: "peek/cancel", sessionId: "external-window-blur" });
   });
 
-  it("never assigns remote or SVG favicon metadata to an image request", () => {
+  it("never assigns remote, SVG or oversized valid-base64 PNG metadata to an image request", () => {
     const { root } = openOverlay("favicon-boundary");
     const src = vi.spyOn(HTMLImageElement.prototype, "src", "set");
-    for (const favIconUrl of ["https://icon.test/tracker.png", "//icon.test/a.png", "data:image/svg+xml,<svg/>"]) {
+    const oversized = new Uint8Array(32769);
+    oversized.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    for (const favIconUrl of ["https://icon.test/tracker.png", "//icon.test/a.png", "data:image/svg+xml,<svg/>", `data:image/png;base64,${Buffer.from(oversized).toString('base64')}`]) {
       listener?.({ kind: "peek/model", sessionId: "favicon-boundary", model: { status: "ready", tabs: [
         { id: 2, windowId: 2, title: "Orion", url: "https://github.com/orion", favIconUrl, lastAccessed: 1, current: false },
       ] } }, {}, () => undefined);
