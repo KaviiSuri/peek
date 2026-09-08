@@ -388,36 +388,17 @@ async function measureOverlay(client, sessionId) {
     functionDeclaration: "function(){return Promise.all(this.getAnimations().map(animation=>animation.finished.catch(()=>undefined))).then(()=>true)}",
     awaitPromise: true, returnByValue: true,
   }, sessionId);
-  const rect = async (node) => {
-    if (!node) return undefined;
-    const { model } = await client.send("DOM.getBoxModel", { nodeId: node.nodeId }, sessionId);
-    const xs = [model.border[0], model.border[2], model.border[4], model.border[6]];
-    const ys = [model.border[1], model.border[3], model.border[5], model.border[7]];
-    const left = Math.min(...xs);
-    const right = Math.max(...xs);
-    const top = Math.min(...ys);
-    const bottom = Math.max(...ys);
-    return { x: left, y: top, width: right - left, height: bottom - top, top, right, bottom, left };
-  };
-  const metrics = await client.send("Page.getLayoutMetrics", {}, sessionId);
-  const viewport = { width: metrics.cssVisualViewport.clientWidth, height: metrics.cssVisualViewport.clientHeight };
-  const panel = await rect(panelNode);
-  const accessibility = await axTree(client, sessionId);
-  const combobox = axRole(accessibility, "combobox")[0];
-  const focused = combobox?.properties?.some((property) => property.name === "focused" && property.value?.value === true);
-  return {
-    sampledAt: new Date().toISOString(),
-    samplingLimit: "Geometry sampled after the palette's own CSS animations settled; not a first-paint timestamp.",
-    viewport,
-    panel,
-    input: await rect(inputNode),
-    selected: await rect(selectedNode),
-    panelCenterDelta: {
-      x: panel.left + panel.width / 2 - viewport.width / 2,
-      y: panel.top + panel.height / 2 - viewport.height / 2,
-    },
-    activeElement: focused ? "input" : null,
-  };
+  const measured = await client.send('Runtime.callFunctionOn', {
+    objectId: panelObject.objectId,
+    functionDeclaration: `function(){
+      const root=this.getRootNode(), input=root.querySelector('input'), list=root.querySelector('.results');
+      const rect=node=>node ? node.getBoundingClientRect().toJSON() : undefined;
+      const panel=rect(this), viewport={width:innerWidth,height:innerHeight};
+      return {sampledAt:new Date().toISOString(),samplingLimit:'One synchronous DOM geometry snapshot after animation settlement, not paint evidence. Separate snapshots may straddle OS resizing.',viewport,panel,input:rect(input),selected:rect(list.hidden?undefined:list.querySelector('[aria-selected="true"]')),panelCenterDelta:{x:panel.left+panel.width/2-viewport.width/2,y:panel.top+panel.height/2-viewport.height/2},activeElement:root.activeElement===input&&document.hasFocus()?'input':null};
+    }`,
+    returnByValue: true,
+  }, sessionId);
+  return measured.result.value;
 }
 
 function activeTabIdentity(state) {
