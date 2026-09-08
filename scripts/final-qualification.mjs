@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { assertCommitChain, cancellationReadiness } from './qualification-assertions.mjs';
 
 // Additional technical qualification, using the same disposable browser and
 // exact shipped build as chrome-qa. No private/personal profile is attached.
@@ -379,9 +380,9 @@ export async function qualify(c) {
             const f = events.slice(a + 1).find(e => e.name === 'window');
             return a >= 0 && f ? { activation: events[a], focus: f } : undefined;
           })).value;
-          assert(chain.activation.args[0] === selected, 'First completed chain activated wrong tab');
-          const after = await browserState();
           const selectedTab = fixtureTabs.find(tab => tab.id === selected);
+          assertCommitChain(chain, selectedTab);
+          const after = await browserState();
           assert(after.lastFocusedWindowId === selectedTab.windowId && after.windows.find(w => w.id === selectedTab.windowId)?.tabs.some(t => t.id === selected && t.active), 'Commit identities do not match');
           await sourceFocus(kind);
           let cancelIdle;
@@ -400,10 +401,11 @@ export async function qualify(c) {
           const cancelledAt = Date.now();
           const cancelAfter = await browserState();
           assert(JSON.stringify(activeTabIdentity(cancelBefore).filter(t => !cancelBefore.windows.find(w => w.id === t.windowId)?.type.includes('popup'))) === JSON.stringify(activeTabIdentity(cancelAfter)), 'Cancellation changed normal active tabs');
-          assert(cancelAfter.lastFocusedWindowId === (kind === 'overlay' ? sourceChromeTab.windowId : settingsTab.windowId), 'Cancellation focus changed');
+          const cancelReadiness = await focusState(source);
+          const readiness = cancellationReadiness(kind === 'overlay' ? sourceChromeTab.windowId : settingsTab.windowId, cancelAfter, cancelReadiness, cancelAt);
           report.samples.push({ count, enumeratedTabCount: before.windows.flatMap(w => w.tabs).length, kind, temperature, index, initialFocus, preGestureFocus, idle,
             dispatchAt: opened.requestedAt, inputObservedMs: opened.inputObservedAt - opened.requestedAt, firstCharacterRequestedMs: inputAt - opened.requestedAt, firstCharacterObservedMs: characterAt - opened.requestedAt,
-            queryOrderMs: orderedAt - queryAt, commitFocusMs: chain.focus.at - commitAt, cancelClosedMs: cancelledAt - cancelAt, cancelIdle, cancelTemperature: temperature, cancelReadiness: await focusState(source), selected, chain, outcome: 'pass' });
+            queryOrderMs: orderedAt - queryAt, commitFocusMs: chain.focus.at - commitAt, cancelClosedMs: cancelledAt - cancelAt, cancelIdle, cancelTemperature: temperature, cancelBefore, cancelAfter, cancelReadiness, selected, chain, ...readiness });
           await save();
           async function reattachIfNeeded() { if (temperature === 'natural-idle') await reattach(); }
         }
@@ -411,7 +413,7 @@ export async function qualify(c) {
     }
     await evalWorker(`chrome.tabs.remove(${JSON.stringify(fixtureTabs.map(t => t.id))})`);
   }
-  report.limits.push('Native posting timestamp excludes compiled-helper startup. DOM/AX observation intervals include CDP polling/attachment; they are not paint latency or a universal SLA. Fallback first paint is not captured before target attachment. Cancel readiness records actual document focus, not physical IME or global OS shortcut conflicts.');
+  report.limits.push('Native posting timestamp excludes compiled-helper startup. DOM/AX observation intervals include CDP polling/attachment; they are not paint latency or a universal SLA. Fallback first paint is not captured before target attachment. Cancel teardown duration is separate from the first collected source-ready observation. Unfocused, hidden or externally departed samples are incomplete, never readiness passes; no restoration is performed inside the measurement. Readiness is not physical IME or global OS shortcut evidence.');
   await save();
   return report;
 }
