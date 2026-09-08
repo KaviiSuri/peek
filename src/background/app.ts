@@ -26,12 +26,13 @@ function deferredBoolean(): DeferredBoolean {
 interface Session {
   readonly id: string;
   readonly source: SourceTab;
-  readonly kind: PresentationKind;
+  kind: PresentationKind | "pending-file-access";
   readonly init: InitMessage;
   readonly mounted: DeferredBoolean;
   creation?: Promise<FallbackSurface>;
   surface?: FallbackSurface;
   senderDocumentId?: string;
+  presentationPhase: "pending" | "visible";
   closingForCommit?: boolean;
   readinessTimer?: ReturnType<typeof setTimeout>;
   closedWindows?: Set<number>;
@@ -116,14 +117,28 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
     },
     observeTabActivation(tabId, windowId) {
       attention.observeActivation(tabId, windowId);
+      for (const session of sessions.values()) {
+        if (session.kind !== "overlay" && session.presentationPhase === "pending" &&
+          !session.closingForCommit && windowId === session.source.windowId && tabId !== session.source.id) {
+          void dismissSession(session).catch((error: unknown) => console.error("Peek source-departure cleanup failed", error));
+        }
+      }
     },
     observeWindowFocus(windowId) {
       attention.observeWindowFocus(windowId);
+      for (const session of sessions.values()) {
+        if (session.kind === "overlay" || session.closingForCommit || windowId === session.surface?.windowId) continue;
+        if (session.presentationPhase === "pending" && windowId === session.source.windowId) continue;
+        // A newer observed focus departure invalidates even a previously captured
+        // focused:true API snapshot. The popup's own focus and commit teardown are
+        // expected transitions, but external windows (including NONE) are not.
+        void dismissSession(session).catch((error: unknown) => console.error("Peek focus-departure cleanup failed", error));
+      }
     },
     removeTabFromAttention(tabId) {
       attention.removeTab(tabId);
       for (const session of sessions.values()) {
-        if (session.kind === "fallback" && session.source.id === tabId) {
+        if (session.kind !== "overlay" && session.source.id === tabId) {
           void dismissSession(session).catch((error: unknown) => console.error("Peek source-close cleanup failed", error));
         }
       }
@@ -148,7 +163,8 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
       }
 
       const sessionId = crypto.randomUUID();
-      const kind = presentationForUrl(source.url);
+      let kind = presentationForUrl(source.url);
+      const needsFileAccessCheck = /^file:/i.test(source.url ?? "");
       const init: InitMessage = {
         kind: "peek/init",
         sessionId,
@@ -156,10 +172,16 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
         sourceWindowId: source.windowId,
         model: { status: "loading", tabs: [] },
       };
-      const session: Session = { id: sessionId, source, kind, init, mounted: deferredBoolean() };
+      const session: Session = { id: sessionId, source, kind: needsFileAccessCheck ? "pending-file-access" : kind, init, mounted: deferredBoolean(), presentationPhase: "pending" };
       sessions.set(sessionId, session);
 
       try {
+        if (needsFileAccessCheck) {
+          const allowed = await Effect.runPromise(boundary("read file access capability", () => browser.fileSchemeAccessAllowed()));
+          if (sessions.get(sessionId) !== session) return { sessionId, model: init.model };
+          kind = presentationForUrl(source.url, allowed);
+          session.kind = kind;
+        }
         if (kind === "overlay") {
           await Effect.runPromise(boundary("open overlay", () => browser.openOverlay(source, init)));
           session.mounted.resolve(true);
@@ -188,6 +210,7 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
             await dismissSession(session);
             return { sessionId, model: init.model };
           }
+          session.presentationPhase = "visible";
         }
       } catch (error) {
         await dismissSession(session);

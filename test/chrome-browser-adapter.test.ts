@@ -14,6 +14,7 @@ const getLastFocused = vi.fn();
 const createWindow = vi.fn();
 const removeWindow = vi.fn();
 const runtimeSendMessage = vi.fn();
+const isAllowedFileSchemeAccess = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -22,11 +23,18 @@ beforeEach(() => {
     windows: { getAll, get: getWindow, getLastFocused, update: updateWindow, create: createWindow, remove: removeWindow },
     tabs: { get: getTab, update: updateTab, sendMessage },
     scripting: { executeScript },
+    extension: { isAllowedFileSchemeAccess },
     storage: { session: { get: getStorage, set: setStorage } },
   });
 });
 
 describe("Chrome browser adapter", () => {
+  it.each([true, false])("reads Chrome file-scheme capability without changing the grant (%s)", async (allowed) => {
+    isAllowedFileSchemeAccess.mockResolvedValue(allowed);
+    await expect(chromeBrowserAdapter.fileSchemeAccessAllowed()).resolves.toBe(allowed);
+    expect(isAllowedFileSchemeAccess).toHaveBeenCalledOnce();
+  });
+
   it("excludes per-tab incognito entries, non-normal windows and Peek's own pages from listing", async () => {
     getAll.mockResolvedValue([
       {

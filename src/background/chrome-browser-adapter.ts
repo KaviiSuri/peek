@@ -137,6 +137,10 @@ export const chromeBrowserAdapter: BrowserAdapter = {
     }
   },
 
+  fileSchemeAccessAllowed(): Promise<boolean> {
+    return chrome.extension.isAllowedFileSchemeAccess();
+  },
+
   fallbackPageUrl(): string {
     return chrome.runtime.getURL("fallback.html");
   },

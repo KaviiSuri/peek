@@ -86,6 +86,30 @@ const styles = `
   @media (prefers-reduced-motion: no-preference) { .palette { animation: peek-in 90ms ease-out; } }
   @keyframes peek-in { from { opacity: 0; transform: translateY(-3px); } }
   @media (max-width: 520px) { .backdrop { padding-inline: 8px; } .palette { width: calc(100vw - 16px); } }
+  @media (max-width: 360px) {
+    .mode { display: none; }
+    .search { padding-inline: 10px; gap: 8px; }
+    .count { font-size: 10px; }
+  }
+  @media (max-height: 180px) {
+    .backdrop { padding-block: 4px; }
+    .palette { height: calc(100vh - 8px); border-radius: 8px; }
+    .search { min-height: 30px; padding-inline: 8px; gap: 7px; }
+    .search svg { width: 14px; height: 14px; }
+    input { font-size: 14px; line-height: 20px; }
+    .mode { display: none; }
+    .count { font-size: 10px; }
+    .results { height: calc(100% - 30px); padding: 1px; }
+    .row { min-height: 32px; padding: 3px 6px; gap: 7px; border-radius: 5px; }
+    .row[aria-selected="true"]::before { top: 6px; bottom: 6px; }
+    .stack { gap: 0; }
+    .title { font-size: 12px; line-height: 14px; }
+    .path { font-size: 10px; line-height: 12px; }
+    .favicon, .digit { width: 16px; height: 16px; }
+    .favicon img { width: 14px; height: 14px; }
+    .state { padding: 4px; font-size: 0; }
+    .state strong { margin-bottom: 1px; font-size: 12px; }
+  }
 `;
 
 export interface PaletteController {
@@ -190,13 +214,27 @@ export function createPaletteController(onCancel: () => void = () => undefined):
         return item;
       }
 
+      // 74px = 8px margins + 2px border + 30px input + 2px list padding + 32px row.
+      // Below it, keep typing/cancellation usable without offering hidden targets.
+      const canShowResults = () => window.innerHeight >= 74;
+
+      function syncAvailableSpace(): void {
+        const available = canShowResults();
+        list.hidden = !available;
+        input.setAttribute("aria-expanded", String(available));
+        count.textContent = !available ? "Resize to select" : model.status === "ready" ? `${results.length} ${results.length === 1 ? "tab" : "tabs"}` : "";
+        const selected = list.querySelector<HTMLElement>('[aria-selected="true"]');
+        if (available && selected) input.setAttribute("aria-activedescendant", selected.id);
+        else input.removeAttribute("aria-activedescendant");
+      }
+
       function visibleRows(): HTMLElement[] {
         const rows = Array.from(list.querySelectorAll<HTMLElement>('[role="option"]'));
         const listBounds = list.getBoundingClientRect();
-        if (listBounds.height <= 0) return [];
+        if (!canShowResults() || listBounds.height <= 0) return [];
         return rows.filter((row) => {
           const bounds = row.getBoundingClientRect();
-          return bounds.height > 0 && bounds.top >= listBounds.top && bounds.bottom <= listBounds.bottom;
+          return bounds.height > 0 && bounds.top >= Math.max(0, listBounds.top) && bounds.bottom <= Math.min(window.innerHeight, listBounds.bottom);
         }).slice(0, 9);
       }
 
@@ -233,7 +271,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
         list.replaceChildren();
         input.removeAttribute("aria-activedescendant");
         syncMode();
-        count.textContent = model.status === "ready" ? `${results.length} ${results.length === 1 ? "tab" : "tabs"}` : "";
+        syncAvailableSpace();
         if (model.status === "loading") {
           list.append(stateItem("Loading open tabs", "You can start typing."));
           return;
@@ -257,7 +295,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
           item.setAttribute("role", "option");
           const selected = tab.id === state.highlightedTabId;
           item.setAttribute("aria-selected", String(selected));
-          if (selected) input.setAttribute("aria-activedescendant", item.id);
+          if (selected && canShowResults()) input.setAttribute("aria-activedescendant", item.id);
 
           const favicon = document.createElement("span");
           favicon.className = "favicon";
@@ -297,7 +335,7 @@ export function createPaletteController(onCancel: () => void = () => undefined):
       }
 
       async function commit(tab: PeekTab | undefined): Promise<void> {
-        if (!tab || committing || !activeSessionId) return;
+        if (!tab || committing || !activeSessionId || !canShowResults()) return;
         committing = true;
         input.readOnly = true;
         const response: unknown = await chrome.runtime.sendMessage({
@@ -395,11 +433,12 @@ export function createPaletteController(onCancel: () => void = () => undefined):
           if (host && shadow.activeElement === null) cancel(false);
         }, 0);
       };
-      window.addEventListener("resize", refreshVisibleDigits);
+      const handleResize = () => { syncAvailableSpace(); refreshVisibleDigits(); };
+      window.addEventListener("resize", handleResize);
       input.addEventListener("focusin", handleFocusIn);
       input.addEventListener("focusout", handleFocusOut);
       disposeSessionListeners = () => {
-        window.removeEventListener("resize", refreshVisibleDigits);
+        window.removeEventListener("resize", handleResize);
         input.removeEventListener("focusin", handleFocusIn);
         input.removeEventListener("focusout", handleFocusOut);
         clearFocusExit();

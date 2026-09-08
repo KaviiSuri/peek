@@ -32,6 +32,7 @@ function fakeBrowser(overrides: Partial<BrowserAdapter> = {}) {
     async updateFallback(_message: ModelMessage) { calls.push("update-fallback"); },
     async dismissFallback(_windowId: number) { calls.push("dismiss-fallback"); },
     fallbackPageUrl() { return "chrome-extension://peek-extension/fallback.html"; },
+    async fileSchemeAccessAllowed() { return true; },
     async revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined> { calls.push("revalidate"); return { id: tabId, windowId, current: false }; },
     async activateTarget(_target: TargetTab) { calls.push("activate"); },
     ...overrides,

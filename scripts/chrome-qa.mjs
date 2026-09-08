@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
 const dist = resolve(root, "dist");
@@ -377,7 +378,8 @@ async function measureOverlay(client, sessionId) {
   const attributes = (node) => Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
   const panelNode = nodes.find((node) => attributes(node).class?.split(/\s+/).includes("palette"));
   const inputNode = nodes.find((node) => node.nodeName === "INPUT" && attributes(node)["aria-label"] === "Find a tab by title or URL");
-  const selectedNode = nodes.find((node) => attributes(node).role === "option" && attributes(node)["aria-selected"] === "true");
+  const resultsHidden = nodes.some((node) => attributes(node).id === "peek-results" && "hidden" in attributes(node));
+  const selectedNode = resultsHidden ? undefined : nodes.find((node) => attributes(node).role === "option" && attributes(node)["aria-selected"] === "true");
   assert(panelNode && inputNode, "Could not resolve overlay geometry nodes through the pierced DOM tree");
   const { object: panelObject } = await client.send("DOM.resolveNode", { nodeId: panelNode.nodeId }, sessionId);
   await client.send("Runtime.callFunctionOn", {
@@ -577,7 +579,7 @@ async function main() {
     let workerSession = await attach(client, workerTargetId);
     const evalWorker = async (expression) => {
       const result = await client.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, workerSession);
-      if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
       return result.result.value;
     };
     const commands = await evalWorker("new Promise((resolve) => chrome.commands.getAll(resolve))");
@@ -1096,6 +1098,57 @@ async function main() {
       return !targetState.some((target) => target.targetId === targetId) && !state.windows.some((window) => window.id === windowId) ? state : undefined;
     }, 10000);
 
+    // Exercise both real Chrome file capabilities only in this disposable profile.
+    // CDP-loaded unpacked Chrome currently defaults to granting file access.
+    const fileUrl = pathToFileURL(resolve(fixtures, "source.html")).href;
+    const defaultFileAccess = await evalWorker("chrome.extension.isAllowedFileSchemeAccess()");
+    assert(defaultFileAccess === true, "Expected the measured CDP unpacked-load file grant for the granted-file control");
+    const filePage = await client.send("Target.createTarget", { url: fileUrl });
+    const fileSession = await attach(client, filePage.targetId);
+    const fileTab = (await waitFor("synthetic file tab", async () => (await evalWorker("chrome.tabs.query({})")).find((tab) => tab.url === fileUrl))).value;
+    const fileTabTarget = await targetByUrl(client, "tab", fileUrl);
+    await evalWorker(`chrome.tabs.update(${fileTab.id},{active:true}).then(()=>chrome.windows.update(${fileTab.windowId},{focused:true}))`);
+    await client.send("Extensions.triggerAction", { id: extensionId, targetId: fileTabTarget.targetId });
+    await waitForOverlay(client, fileSession);
+    const grantedFileInjection = await injectionProbe(fileTab.id);
+    assert(grantedFileInjection.ok === true, "Granted local file did not stay injectable on the ordinary path");
+    assert(!(await browserState()).windows.some((window) => window.type === "popup"), "Granted file unexpectedly opened fallback");
+    await press(client, fileSession, "Escape");
+    await waitForOverlayClosed(client, fileSession);
+    const manager = await client.send("Target.createTarget", { url: `chrome://extensions/?id=${extensionId}` });
+    const managerSession = await attach(client, manager.targetId);
+    await waitFor("disposable extension-management API", async () => (await client.send("Runtime.evaluate", { expression: "typeof chrome.developerPrivate?.updateExtensionConfiguration === 'function'", returnByValue: true }, managerSession)).result.value);
+    await client.send("Target.detachFromTarget", { sessionId: workerSession });
+    const updateFileGrant = await client.send("Runtime.evaluate", {
+      expression: `new Promise((resolve,reject)=>chrome.developerPrivate.updateExtensionConfiguration({extensionId:${JSON.stringify(extensionId)},fileAccess:false},()=>chrome.runtime.lastError?reject(new Error(chrome.runtime.lastError.message)):resolve(true)))`,
+      awaitPromise: true, returnByValue: true,
+    }, managerSession);
+    assert(updateFileGrant.result.value === true && !updateFileGrant.exceptionDetails, "Could not revoke only the disposable extension's file grant");
+    // Chrome disables the CDP-loaded extension on this configuration update.
+    const reenabled = await client.send("Runtime.evaluate", {
+      expression: `new Promise((resolve,reject)=>chrome.management.setEnabled(${JSON.stringify(extensionId)},true,()=>chrome.runtime.lastError?reject(new Error(chrome.runtime.lastError.message)):resolve(true)))`,
+      awaitPromise: true, returnByValue: true, userGesture: true,
+    }, managerSession);
+    assert(reenabled.result.value === true && !reenabled.exceptionDetails, "Could not re-enable the disposable extension after file capability change");
+    const fileWorker = await waitFor("worker after disposable file capability change", async () => (await targets(client)).find((target) => target.type === "service_worker" && target.targetId !== workerTargetId && target.url.startsWith(`chrome-extension://${extensionId}/`)));
+    workerTargetId = fileWorker.value.targetId;
+    workerSession = await attach(client, workerTargetId);
+    await waitFor("Chrome APIs after file capability restart", () => evalWorker("typeof chrome !== 'undefined' && typeof chrome.extension?.isAllowedFileSchemeAccess === 'function'"));
+    const deniedFileAccess = await evalWorker("chrome.extension.isAllowedFileSchemeAccess()");
+    assert(deniedFileAccess === false, "Disposable file capability was not denied");
+    await evalWorker(`chrome.tabs.update(${fileTab.id},{active:true}).then(()=>chrome.windows.update(${fileTab.windowId},{focused:true}))`);
+    const fileFallback = await openFallback(fileTabTarget.targetId, "denied local file");
+    const deniedFileInjection = await injectionProbe(fileTab.id);
+    assert(deniedFileInjection.ok === false, "Denied local file unexpectedly remained injectable");
+    await capture(client, fileFallback.session, "20-denied-local-file-fallback.png");
+    void press(client, fileFallback.session, "Escape").catch(() => undefined);
+    await waitForFallbackClosed(fileFallback.page.targetId, fileFallback.popup.id, "denied local file");
+    const fileCapability = { fileUrl, defaultFileAccess, grantedFileInjection, deniedFileAccess, deniedFileInjection, limit: "The grant change and re-enable apply only to Peek in the newly created disposable profile, which closes at the end. No personal/global or OS permission was changed." };
+    await writeFile(resolve(output, "file-capability.json"), JSON.stringify(fileCapability, null, 2));
+    await client.send("Target.closeTarget", { targetId: filePage.targetId });
+    await client.send("Target.closeTarget", { targetId: manager.targetId });
+    await evalWorker(`chrome.tabs.update(${sourceChromeTab.id},{active:true}).then(()=>chrome.windows.update(${sourceChromeTab.windowId},{focused:true}))`);
+
     const ordinaryControl = await createInterceptedFixturePage(client, "https://peek-control.example/ordinary", "Ordinary Peek HTTPS control");
     const ordinaryControlTab = await evalWorker(`chrome.tabs.query({}).then(tabs=>tabs.find(tab=>tab.url===${JSON.stringify(ordinaryControl.url)}))`);
     assert(ordinaryControlTab, "Ordinary HTTPS control was not enumerated");
@@ -1163,6 +1216,34 @@ async function main() {
     const fallbackRestoredCaret = await overlayInputState(client, firstFallback.session);
     assert(fallbackRestoredCaret.value === "settings2" && fallbackRestoredCaret.selectionStart === 1 && fallbackRestoredCaret.selectionEnd === 5 && fallbackRestoredCaret.selectionDirection === "backward", "Fallback query/caret round trip lost the exact selection");
     await replaceOverlayQuery(client, firstFallback.session, "");
+    const tinyFallbackGeometry = [];
+    for (const { width, height } of [{ width: 358, height: 148 }, { width: 358, height: 74 }, { width: 236, height: 189 }]) {
+      await client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile: false }, firstFallback.session);
+      const geometry = await measureOverlay(client, firstFallback.session);
+      await capture(client, firstFallback.session, `19-fallback-compact-${width}x${height}.png`);
+      tinyFallbackGeometry.push(geometry);
+      const { panel, input, selected: row, viewport } = geometry;
+      assert(panel && input && row && panel.top >= 0 && panel.bottom <= viewport.height && input.width >= 80 && input.height >= 18 && input.top >= panel.top && input.bottom <= panel.bottom && row.top >= panel.top && row.bottom <= panel.bottom, `Compact fallback clips at ${height} CSS pixels`);
+      await press(client, firstFallback.session, "Tab");
+      const digits = await overlayDigitRows(client, firstFallback.session);
+      const labelled = digits.filter((row) => row.digit !== undefined);
+      assert(labelled.length > 0 && (height !== 74 || labelled.length === 1), `Compact fallback has no coherent visible digit at ${height}px`);
+      await press(client, firstFallback.session, "Tab");
+    }
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 358, height: 60, deviceScaleFactor: 2, mobile: false }, firstFallback.session);
+    const tinyNoResultsBefore = await browserState();
+    await press(client, firstFallback.session, "Enter");
+    await press(client, firstFallback.session, "Tab");
+    await press(client, firstFallback.session, "1", "Digit1");
+    assert((await overlayDigitRows(client, firstFallback.session)).every((row) => row.digit === undefined), "Below one-row height retained numeric choices");
+    assert((await axRole(await axTree(client, firstFallback.session), "option")).length === 0, "Below one-row height exposed hidden options to accessibility");
+    const tinyNoResultsAfter = await browserState();
+    assert(tinyNoResultsAfter.lastFocusedWindowId === tinyNoResultsBefore.lastFocusedWindowId && sameActiveTabs(tinyNoResultsBefore, tinyNoResultsAfter), "Hidden result input activated a tab");
+    const tinyNoResultsGeometry = await measureOverlay(client, firstFallback.session);
+    assert(tinyNoResultsGeometry.input.width >= 80 && tinyNoResultsGeometry.input.height >= 18 && tinyNoResultsGeometry.input.bottom <= tinyNoResultsGeometry.panel.bottom, "Below one-row height clipped the input");
+    await capture(client, firstFallback.session, "19-fallback-input-only-60.png");
+    await press(client, firstFallback.session, "Tab");
+    await client.send("Emulation.clearDeviceMetricsOverride", {}, firstFallback.session);
     await client.send("Input.imeSetComposition", { text: "に", selectionStart: 1, selectionEnd: 1 }, firstFallback.session);
     await press(client, firstFallback.session, "Enter");
     const fallbackComposing = await overlayInputState(client, firstFallback.session);
@@ -1274,6 +1355,7 @@ async function main() {
     await evalWorker(`chrome.tabs.remove([${webStoreState.value.tab.id},${ordinaryControlTab.id}])`);
 
     const fallbackEvidence = {
+      fileCapability,
       ordinaryControlUrl: ordinaryControl.url,
       modelParity: { query: "peek", ordinaryIds: ordinaryParityIds, fallbackIds: fallbackParityIds },
       knownRestrictedUrl: "chrome://settings/",
@@ -1297,6 +1379,7 @@ async function main() {
       exclusion: { fallbackTabId: fallbackTab.id, absentFromResultIds: true, attentionWhileOpen: attentionWhileFallback },
       currentNoOpAttention: { before: currentAttentionBefore, after: currentAttentionAfter },
       changedBehindPopup: { before: changedSourceBefore, firstCompletedCommit: changedSourceCommit.value, after: changedSourceAfter },
+      compactGeometry: { reproducedCssViewports: tinyFallbackGeometry, inputOnlyGeometry: tinyNoResultsGeometry, hiddenCommitBefore: tinyNoResultsBefore, hiddenCommitAfter: tinyNoResultsAfter, limit: "Device metrics explicitly reproduce 358x74 CSS pixels at DPR2 (716x148 screenshot), plus 358x148, narrow 236x189 and input-only 358x60. The later native run retains its original three-normal-window pressure without emulation." },
       keyboard: { initialIds: fallbackInitialIds, restoredCaret: fallbackRestoredCaret, composition: fallbackComposing, numericRows: fallbackNumericRows, numericCommittedId: settingsTab.id, compositionLimit: "CDP Chrome composition events, not physical OS IME candidate UI" },
     };
 
@@ -1305,6 +1388,7 @@ async function main() {
     let nativeRestrictedShortcut;
     if (process.env.PEEK_QA_NATIVE_SHORTCUT === "1") {
       const url = "chrome://version/";
+      // Retain the extra-window case that previously exposed native popup clipping.
       await client.send("Target.createTarget", { url, newWindow: true });
       const nativeRestrictedTab = (await waitFor("fresh restricted native tab enumeration", async () =>
         (await evalWorker("chrome.tabs.query({})")).find((tab) => tab.url === url))).value;
@@ -1323,8 +1407,16 @@ async function main() {
       const selected = await waitForSelectedOverlayTabId(client, session, "native restricted first delivered selection");
       const popup = (await browserState()).windows.find((window) => window.tabs.some((tab) => tab.url === page.url));
       assert(popup?.focused, "Native restricted fallback not focused");
+      const geometryBeforeCapture = await measureOverlay(client, session);
       await capture(client, session, "18-native-restricted-version.png");
-      nativeRestrictedShortcut = { sourceUrl: url, sourceTabId: nativeRestrictedTab.id, sourceWindowId: nativeRestrictedTab.windowId, popupWindowId: popup.id, selectedTabId: selected, target, previouslyActionInvoked: false };
+      const geometryAfterCapture = await measureOverlay(client, session);
+      const observedWindowState = await browserState();
+      await writeFile(resolve(output, "native-restricted-geometry.json"), JSON.stringify({ geometryBeforeCapture, geometryAfterCapture, observedWindowState }, null, 2));
+      for (const geometry of [geometryBeforeCapture, geometryAfterCapture]) {
+        const { panel, input, selected: row, viewport } = geometry;
+        assert(panel && input && row && panel.top >= 0 && panel.bottom <= viewport.height && panel.left >= 0 && panel.right <= viewport.width && input.width >= 80 && input.height >= 18 && input.top >= panel.top && input.bottom <= panel.bottom && row.top >= panel.top && row.bottom <= panel.bottom, "Native restricted palette is clipped; inspect native-restricted-geometry.json and screenshot");
+      }
+      nativeRestrictedShortcut = { sourceUrl: url, sourceTabId: nativeRestrictedTab.id, sourceWindowId: nativeRestrictedTab.windowId, popupWindowId: popup.id, selectedTabId: selected, target, previouslyActionInvoked: false, geometryBeforeCapture, geometryAfterCapture, observedWindowState };
       void press(client, session, "Escape").catch(() => undefined);
       await waitForFallbackClosed(page.targetId, popup.id, "native restricted");
     }
@@ -1418,6 +1510,8 @@ async function main() {
         coldWorkerSessionRestore: "pass: service worker target stopped, restarted, and previous exact ID selected",
         restrictedFallback: "pass: chrome://settings and HTTPS Chrome Web Store used transient extension windows while ordinary HTTPS remained overlay-injectable",
         fallbackParityAndCleanup: "pass: shared palette model/keyboard route, self-exclusion, exact current/cross-window commits, Escape, focus-away, browser-close and clean reinvocation",
+        fileCapabilities: "pass: granted synthetic file stays overlay; disposable-only denied file rejects injection and opens fallback",
+        fallbackConstrainedViewports: "pass: 358x74, 358x148 and 236x189 retain usable input and a full selected row; 358x60 hides rows and cannot commit hidden choices",
         pendingCommitEscape: "pass with real Chrome key events while the extension worker was paused; focused input stayed operable and active-tab identities were preserved",
         titleUrlFilter: "pass",
         imperfectClueSearch: "pass: 30-tab ambiguity fixture covered repository home, cross-field PR number, dropped characters, case, honest miss, explicit postmortem and exact result commit",

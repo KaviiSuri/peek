@@ -3,6 +3,7 @@ import { createBackgroundApp, type FallbackSender } from "../src/background/app"
 import type { BrowserAdapter, FallbackSurface, TargetTab } from "../src/background/browser-adapter";
 import type { ModelMessage } from "../src/shared/model";
 import { registerBackground } from "../src/background/wiring";
+import { chromeBrowserAdapter } from "../src/background/chrome-browser-adapter";
 
 function deferred<A>() {
   let resolve!: (value: A) => void;
@@ -30,6 +31,7 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
     updateFallback: vi.fn(async (_message: ModelMessage) => undefined),
     dismissFallback: vi.fn(async (_id: number) => undefined),
     fallbackPageUrl: () => "chrome-extension://peek/fallback.html",
+    fileSchemeAccessAllowed: vi.fn(async () => true),
     revalidateTarget: vi.fn(async (id, windowId) => ({ id, windowId, current: false })),
     activateTarget: vi.fn(async () => undefined),
     ...overrides,
@@ -37,11 +39,13 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
   const app = createBackgroundApp(adapter);
   let messageListener!: (message: unknown, sender: chrome.runtime.MessageSender, respond: (value: unknown) => void) => boolean | undefined;
   let windowRemoved!: (windowId: number) => void;
+  let windowFocus!: (windowId: number) => void;
+  let tabActivated!: (info: { tabId: number; windowId: number }) => void;
   registerBackground({
     onActionClicked: { addListener() {} },
-    onTabActivated: { addListener() {} },
+    onTabActivated: { addListener(listener) { tabActivated = listener; } },
     onTabRemoved: { addListener() {} },
-    onWindowFocusChanged: { addListener() {} },
+    onWindowFocusChanged: { addListener(listener) { windowFocus = listener; } },
     onWindowRemoved: { addListener(listener) { windowRemoved = listener; } },
     onMessage: { addListener(listener) { messageListener = listener as typeof messageListener; } },
   }, app);
@@ -63,12 +67,93 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
     await invocation;
     return { id, identity, commit: { kind: "peek/commit" as const, sessionId: id, targetTabId: 2, targetWindowId: 20 } };
   };
-  return { adapter, app, source, surface, created, sender, invoke, runtime, open, windowRemoved };
+  return { adapter, app, source, surface, created, sender, invoke, runtime, open, windowRemoved, windowFocus, tabActivated };
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("fallback registered lifecycle", () => {
+  it("uses fallback for denied file capability and overlay for granted file capability", async () => {
+    const denied = setup({ fileSchemeAccessAllowed: vi.fn(async () => false) });
+    denied.source.url = "file:///synthetic/source.html";
+    await denied.open();
+    expect(denied.adapter.openOverlay).not.toHaveBeenCalled();
+    expect(denied.adapter.presentFallback).toHaveBeenCalledOnce();
+    const granted = setup();
+    granted.source.url = "file:///synthetic/source.html";
+    await granted.invoke();
+    expect(granted.adapter.openOverlay).toHaveBeenCalledOnce();
+    expect(granted.adapter.presentFallback).not.toHaveBeenCalled();
+  });
+
+  it("does not revive a file invocation when capability resolution follows an observed focus departure", async () => {
+    const permission = deferred<boolean>();
+    const f = setup({ fileSchemeAccessAllowed: () => permission.promise });
+    f.source.url = "file:///synthetic/source.html";
+    const invocation = f.invoke();
+    f.windowFocus(99);
+    permission.resolve(false);
+    await invocation;
+    expect(f.adapter.presentFallback).not.toHaveBeenCalled();
+    expect(f.adapter.openOverlay).not.toHaveBeenCalled();
+  });
+
+  it("rejects subframe readiness without pinning it, and rejects subframe mounted acknowledgement", async () => {
+    const f = setup();
+    const invocation = f.invoke();
+    const id = await f.created.promise;
+    const identity = f.sender(id);
+    expect(await f.runtime({ kind: "peek/fallback-ready", sessionId: id }, { ...identity, frameId: 1, documentId: "subframe" })).toBeUndefined();
+    expect(await f.runtime({ kind: "peek/fallback-ready", sessionId: id }, identity)).toMatchObject({ sourceTabId: 1 });
+    await f.runtime({ kind: "peek/fallback-mounted", sessionId: id }, { ...identity, frameId: 1 });
+    expect(f.adapter.presentFallback).not.toHaveBeenCalled();
+    await f.runtime({ kind: "peek/fallback-mounted", sessionId: id }, identity);
+    await invocation;
+    expect(f.adapter.presentFallback).toHaveBeenCalledOnce();
+  });
+
+  it.each([99, -1])("does not let a stale focused snapshot reverse observed focus departure to %s", async (windowId) => {
+    const snapshot = deferred<chrome.windows.Window>();
+    const get = vi.fn(() => snapshot.promise);
+    const update = vi.fn(async () => undefined);
+    vi.stubGlobal("chrome", { windows: { get, update } });
+    const f = setup({ presentFallback: chromeBrowserAdapter.presentFallback });
+    const opened = f.open();
+    await vi.waitFor(() => expect(get).toHaveBeenCalled());
+    f.windowFocus(windowId);
+    snapshot.resolve({ id: 10, focused: true, tabs: [{ id: 1, active: true }] } as chrome.windows.Window);
+    await opened;
+    expect(update).not.toHaveBeenCalled();
+    expect(f.adapter.dismissFallback).toHaveBeenCalledWith(91);
+  });
+
+  it("invalidates pending presentation when source-tab activation overtakes its query snapshot", async () => {
+    const snapshot = deferred<chrome.windows.Window>();
+    const get = vi.fn(() => snapshot.promise);
+    const update = vi.fn(async () => undefined);
+    vi.stubGlobal("chrome", { windows: { get, update } });
+    const f = setup({ presentFallback: chromeBrowserAdapter.presentFallback });
+    const opened = f.open();
+    await vi.waitFor(() => expect(get).toHaveBeenCalled());
+    f.tabActivated({ tabId: 99, windowId: 10 });
+    snapshot.resolve({ id: 10, focused: true, tabs: [{ id: 1, active: true }] } as chrome.windows.Window);
+    await opened;
+    expect(update).not.toHaveBeenCalled();
+    expect(f.adapter.dismissFallback).toHaveBeenCalledWith(91);
+  });
+
+  it("allows unchanged-source and expected own-popup focus events during presentation", async () => {
+    const f = setup({ presentFallback: chromeBrowserAdapter.presentFallback });
+    const update = vi.fn(async () => { f.windowFocus(91); });
+    vi.stubGlobal("chrome", { windows: {
+      get: vi.fn(async () => { f.windowFocus(10); return { focused: true, tabs: [{ id: 1, active: true }] }; }), update,
+    } });
+    await f.open();
+    expect(update).toHaveBeenCalledWith(91, { focused: true });
+    expect(f.adapter.dismissFallback).not.toHaveBeenCalled();
+    expect(f.adapter.updateFallback).toHaveBeenCalledOnce();
+  });
+
   it("delivers previous preselection from the source user context, never the transient UI context", async () => {
     const f = setup();
     await f.open();
@@ -107,7 +192,7 @@ describe("fallback registered lifecycle", () => {
   it("allows its own acknowledged removal during commit but not a prior browser-close", async () => {
     const f = setup();
     const { identity, commit } = await f.open();
-    vi.mocked(f.adapter.dismissFallback).mockImplementation(async (id) => { f.windowRemoved(id); });
+    vi.mocked(f.adapter.dismissFallback).mockImplementation(async (id) => { f.windowRemoved(id); f.windowFocus(20); });
     expect(await f.runtime(commit, identity)).toEqual({ ok: true });
     expect(f.adapter.activateTarget).toHaveBeenCalledOnce();
   });

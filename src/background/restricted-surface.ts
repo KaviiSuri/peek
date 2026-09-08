@@ -16,7 +16,7 @@ const RESTRICTED_SCHEMES = new Set([
  * injection. This decision is made before injection; injection/runtime/render
  * failures on otherwise ordinary HTTP(S) pages remain errors.
  */
-export function presentationForUrl(rawUrl: string | undefined): PresentationKind {
+export function presentationForUrl(rawUrl: string | undefined, fileSchemeAccessAllowed = true): PresentationKind {
   if (!rawUrl) return "overlay";
   let url: URL;
   try {
@@ -24,7 +24,7 @@ export function presentationForUrl(rawUrl: string | undefined): PresentationKind
   } catch {
     return "overlay";
   }
-  if (RESTRICTED_SCHEMES.has(url.protocol)) return "fallback";
+  if (RESTRICTED_SCHEMES.has(url.protocol) || (url.protocol === "file:" && !fileSchemeAccessAllowed)) return "fallback";
   if (url.protocol === "https:" && (
     url.hostname === "chromewebstore.google.com" ||
     (url.hostname === "chrome.google.com" && (url.pathname === "/webstore" || url.pathname.startsWith("/webstore/")))

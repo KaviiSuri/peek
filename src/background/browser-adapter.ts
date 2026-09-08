@@ -28,6 +28,7 @@ export interface BrowserAdapter extends AttentionAdapter {
   updateFallback(message: ModelMessage): Promise<void>;
   dismissFallback(windowId: number): Promise<void>;
   fallbackPageUrl(): string;
+  fileSchemeAccessAllowed(): Promise<boolean>;
   revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined>;
   activateTarget(target: TargetTab): Promise<void>;
 }
