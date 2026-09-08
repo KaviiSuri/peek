@@ -27,6 +27,11 @@ function fakeBrowser(overrides: Partial<BrowserAdapter> = {}) {
     async openOverlay(_source: SourceTab, message: InitMessage) { calls.push("open"); delivered = message; },
     async updateOverlay(_sourceTabId: number, message: ModelMessage) { calls.push("update"); updated = message; },
     async dismissOverlay(_sourceTabId: number, _sessionId: string) { calls.push("dismiss"); },
+    async createFallback() { calls.push("create-fallback"); return { tabId: 90, windowId: 91 }; },
+    async presentFallback() { return true; },
+    async updateFallback(_message: ModelMessage) { calls.push("update-fallback"); },
+    async dismissFallback(_windowId: number) { calls.push("dismiss-fallback"); },
+    fallbackPageUrl() { return "chrome-extension://peek-extension/fallback.html"; },
     async revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined> { calls.push("revalidate"); return { id: tabId, windowId, current: false }; },
     async activateTarget(_target: TargetTab) { calls.push("activate"); },
     ...overrides,
@@ -213,5 +218,127 @@ describe("production background composition", () => {
     const response = await app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 99);
     expect(response.ok).toBe(false);
     expect(fake.calls).toEqual(["open", "list", "update"]);
+  });
+
+  it("keeps an arbitrary ordinary-page injection failure visible instead of opening fallback", async () => {
+    const fake = fakeBrowser({
+      async openOverlay() { fake.calls.push("open-error"); throw new Error("synthetic renderer defect"); },
+    });
+    const app = createBackgroundApp(fake.adapter);
+
+    await expect(app.invoke({ id: 1, windowId: 4, url: "https://ordinary.test" })).rejects.toThrow("open overlay failed");
+    expect(fake.calls).toEqual(["open-error"]);
+  });
+
+  it("runs the same model and exact commit path in a provenance-checked restricted fallback", async () => {
+    let createdSessionId = "";
+    let signalCreated!: () => void;
+    const created = new Promise<void>((resolve) => { signalCreated = resolve; });
+    const fake = fakeBrowser({
+      async createFallback(_source, sessionId) { fake.calls.push("create-fallback"); createdSessionId = sessionId; signalCreated(); return { tabId: 90, windowId: 91 }; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const invocation = app.invoke({ id: 1, windowId: 4, url: "chrome://settings/" });
+    await created;
+    const sender = { tabId: 90, windowId: 91, url: `chrome-extension://peek-extension/fallback.html#${createdSessionId}` };
+    const init = await app.fallbackReady(createdSessionId, sender);
+    expect(init?.model).toEqual({ status: "loading", tabs: [] });
+    app.fallbackMounted(createdSessionId, sender);
+    const opened = await invocation;
+
+    expect(fake.calls).toEqual(["create-fallback", "list", "update-fallback"]);
+    await expect(app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, 1))
+      .resolves.toEqual({ ok: false, error: "Peek session expired." });
+    await expect(app.commit({ kind: "peek/commit", sessionId: opened.sessionId, targetTabId: 2, targetWindowId: 9 }, sender))
+      .resolves.toEqual({ ok: true });
+    expect(fake.calls).toEqual(["create-fallback", "list", "update-fallback", "revalidate", "dismiss-fallback", "activate"]);
+  });
+
+  it("accepts early fallback readiness but rejects stale or unrelated page provenance", async () => {
+    let releaseCreation!: () => void;
+    const creation = new Promise<void>((resolve) => { releaseCreation = resolve; });
+    let createdSessionId = "";
+    const fake = fakeBrowser({
+      async createFallback(_source, sessionId) { fake.calls.push("create-fallback"); createdSessionId = sessionId; await creation; return { tabId: 90, windowId: 91 }; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const invocation = app.invoke({ id: 1, windowId: 4, url: "chrome://newtab/" });
+    await Promise.resolve();
+    expect(await app.fallbackReady(createdSessionId, { tabId: 90, windowId: 91, url: "https://unrelated.test/" })).toBeUndefined();
+    const ready = app.fallbackReady(createdSessionId, { tabId: 90, windowId: 91, url: `chrome-extension://peek-extension/fallback.html#${createdSessionId}` });
+    releaseCreation();
+    expect((await ready)?.sessionId).toBe(createdSessionId);
+    app.fallbackMounted(createdSessionId, { tabId: 90, windowId: 91, url: `chrome-extension://peek-extension/fallback.html#${createdSessionId}` });
+    await invocation;
+  });
+
+  it("cancels and cleans up while fallback readiness is pending", async () => {
+    let createdSessionId = "";
+    let signalCreated!: () => void;
+    const created = new Promise<void>((resolve) => { signalCreated = resolve; });
+    const fake = fakeBrowser({
+      async createFallback(_source, sessionId) { fake.calls.push("create-fallback"); createdSessionId = sessionId; signalCreated(); return { tabId: 90, windowId: 91 }; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const invocation = app.invoke({ id: 1, windowId: 4, url: "chrome://settings/" });
+    await created;
+    const sender = { tabId: 90, windowId: 91, url: `chrome-extension://peek-extension/fallback.html#${createdSessionId}` };
+    expect(await app.fallbackReady(createdSessionId, sender)).toBeDefined();
+    await app.cancel({ kind: "peek/cancel", sessionId: createdSessionId }, sender);
+    await invocation;
+
+    expect(fake.calls).toEqual(["create-fallback", "dismiss-fallback"]);
+  });
+
+  it("cleans a late-created superseded fallback without closing its replacement", async () => {
+    let releaseFirst!: () => void;
+    const firstCreation = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const sessionIds: string[] = [];
+    const dismissed: number[] = [];
+    const fake = fakeBrowser({
+      async createFallback(_source, sessionId) {
+        fake.calls.push("create-fallback");
+        sessionIds.push(sessionId);
+        if (sessionIds.length === 1) { await firstCreation; return { tabId: 90, windowId: 91 }; }
+        return { tabId: 92, windowId: 93 };
+      },
+      async dismissFallback(windowId) { fake.calls.push("dismiss-fallback"); dismissed.push(windowId); },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const first = app.invoke({ id: 1, windowId: 4, url: "chrome://settings/" });
+    await Promise.resolve();
+    const second = app.invoke({ id: 1, windowId: 4, url: "chrome://settings/" });
+    while (sessionIds.length < 2) await Promise.resolve();
+    const replacementId = sessionIds[1]!;
+    const replacementSender = { tabId: 92, windowId: 93, url: `chrome-extension://peek-extension/fallback.html#${replacementId}` };
+    expect(await app.fallbackReady(replacementId, replacementSender)).toBeDefined();
+    app.fallbackMounted(replacementId, replacementSender);
+    await second;
+    releaseFirst();
+    await first;
+
+    expect(dismissed).toEqual([91]);
+    await expect(app.commit({ kind: "peek/commit", sessionId: replacementId, targetTabId: 2, targetWindowId: 9 }, replacementSender)).resolves.toEqual({ ok: true });
+    expect(dismissed).toEqual([91, 93]);
+  });
+
+  it("expires fallback provenance when browser window chrome closes", async () => {
+    let createdSessionId = "";
+    let signalCreated!: () => void;
+    const created = new Promise<void>((resolve) => { signalCreated = resolve; });
+    const fake = fakeBrowser({
+      async createFallback(_source, sessionId) { fake.calls.push("create-fallback"); createdSessionId = sessionId; signalCreated(); return { tabId: 90, windowId: 91 }; },
+    });
+    const app = createBackgroundApp(fake.adapter);
+    const invocation = app.invoke({ id: 1, windowId: 4, url: "chrome://settings/" });
+    await created;
+    const sender = { tabId: 90, windowId: 91, url: `chrome-extension://peek-extension/fallback.html#${createdSessionId}` };
+    await app.fallbackReady(createdSessionId, sender);
+    app.fallbackMounted(createdSessionId, sender);
+    await invocation;
+    app.observeWindowRemoved(91);
+
+    await expect(app.commit({ kind: "peek/commit", sessionId: createdSessionId, targetTabId: 2, targetWindowId: 9 }, sender))
+      .resolves.toEqual({ ok: false, error: "Peek session expired." });
   });
 });

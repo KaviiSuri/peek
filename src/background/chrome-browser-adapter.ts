@@ -79,6 +79,57 @@ export const chromeBrowserAdapter: BrowserAdapter = {
     await chrome.tabs.sendMessage(sourceTabId, { kind: "peek/dismiss", sessionId });
   },
 
+  async createFallback(source: SourceTab, sessionId: string) {
+    const sourceWindow = await chrome.windows.get(source.windowId);
+    const width = Math.min(720, sourceWindow.width ?? 720);
+    const height = Math.min(320, sourceWindow.height ?? 320);
+    const left = sourceWindow.left === undefined || sourceWindow.width === undefined
+      ? undefined
+      : Math.round(sourceWindow.left + (sourceWindow.width - width) / 2);
+    const top = sourceWindow.top === undefined || sourceWindow.height === undefined
+      ? undefined
+      : Math.round(sourceWindow.top + (sourceWindow.height - height) / 2);
+    const created = await chrome.windows.create({
+      url: `${chrome.runtime.getURL("fallback.html")}#${encodeURIComponent(sessionId)}`,
+      type: "popup",
+      focused: false,
+      width,
+      height,
+      ...(left === undefined ? {} : { left }),
+      ...(top === undefined ? {} : { top }),
+    });
+    const tab = created?.tabs?.[0];
+    if (created?.id === undefined || tab?.id === undefined) {
+      if (created?.id !== undefined) await chrome.windows.remove(created.id).catch(() => undefined);
+      throw new Error("Chrome did not return fallback window identity");
+    }
+    return { tabId: tab.id, windowId: created.id };
+  },
+
+  async presentFallback(source, surface, isCurrent): Promise<boolean> {
+    const window = await chrome.windows.get(source.windowId, { populate: true });
+    if (!isCurrent() || !window.focused || !window.tabs?.some((tab) => tab.id === source.id && tab.active)) return false;
+    await chrome.windows.update(surface.windowId, { focused: true });
+    return isCurrent();
+  },
+
+  async updateFallback(message: ModelMessage): Promise<void> {
+    await chrome.runtime.sendMessage(message);
+  },
+
+  async dismissFallback(windowId: number): Promise<void> {
+    try {
+      await chrome.windows.remove(windowId);
+    } catch (error) {
+      // Only Chrome's exact missing-window diagnostic is idempotent cleanup.
+      if (!(error instanceof Error) || error.message !== `No window with id: ${windowId}.`) throw error;
+    }
+  },
+
+  fallbackPageUrl(): string {
+    return chrome.runtime.getURL("fallback.html");
+  },
+
   async revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined> {
     try {
       const [tab, window] = await Promise.all([

@@ -25,10 +25,23 @@ await Promise.all([
     minify: true,
     sourcemap: false,
   }),
+  build({
+    entryPoints: ["src/fallback.ts"],
+    outfile: "dist/fallback.js",
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "chrome120",
+    minify: true,
+    sourcemap: false,
+  }),
 ]);
-await cp("manifest.json", "dist/manifest.json");
+await Promise.all([
+  cp("manifest.json", "dist/manifest.json"),
+  cp("fallback.html", "dist/fallback.html"),
+]);
 
-const sizes = await Promise.all(["background.js", "overlay.js"].map(async (file) => ({
+const sizes = await Promise.all(["background.js", "overlay.js", "fallback.js", "fallback.html"].map(async (file) => ({
   file,
   bytes: (await stat(`dist/${file}`)).size,
 })));
