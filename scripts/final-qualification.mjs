@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { assertCommitChain, cancellationReadiness } from './qualification-assertions.mjs';
+import { assertDrySchedule, earlyCharacterAttempt } from './early-character.mjs';
 
 // Additional technical qualification, using the same disposable browser and
 // exact shipped build as chrome-qa. No private/personal profile is attached.
@@ -13,7 +14,7 @@ export async function qualify(c) {
     waitForOverlayClosed, measureOverlay, activeTabIdentity,
     createInterceptedFixturePage, searchFixtureFacts, fixtureOrigins, activateDisposableChrome,
     getWorkerSession, setWorkerSession, CdpClient } = c;
-  const report = { samples: [], visuals: [], departures: [], earlyColdCharacterQualification: 'pending: workload typing is readiness-gated, not an early-input probe', limits: [] };
+  const report = { samples: [], earlyCharacters: [], earlyRecoveries: [], visuals: [], departures: [], earlyColdCharacterQualification: 'pending native execution/review; fixed-delay attempts are separate from readiness-gated samples', limits: [] };
   const save = () => writeFile(resolve(output, 'final-qualification.json'), JSON.stringify(report, null, 2));
   await client.send('Runtime.evaluate', { expression: `globalThis.qaFocusEvents=[];for(const type of ['focus','blur','visibilitychange','pagehide'])window.addEventListener(type,()=>qaFocusEvents.push({type,at:Date.now(),focused:document.hasFocus(),visibility:document.visibilityState}),true)`, returnByValue: true }, sourceSession);
   await evalWorker(`globalThis.qaBrowserEvents=[];chrome.windows.onFocusChanged.addListener(id=>qaBrowserEvents.push({kind:'focus',id,at:Date.now()}));chrome.tabs.onActivated.addListener(info=>qaBrowserEvents.push({kind:'activation',info,at:Date.now()}))`);
@@ -69,6 +70,12 @@ export async function qualify(c) {
   const binary = resolve(output, 'post-key');
   await writeFile(swift, `import CoreGraphics\nimport Foundation\nguard CGPreflightPostEventAccess() else { fatalError("No existing event permission") }\nlet pid = pid_t(Int32(CommandLine.arguments[1])!)\nlet source = CGEventSource(stateID: .hidSystemState)\nlet down = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: true)!\ndown.flags = [.maskControl]\nprint(Date().timeIntervalSince1970 * 1000)\ndown.postToPid(pid)\nusleep(20000)\nlet up = CGEvent(keyboardEventSource: source, virtualKey: 49, keyDown: false)!\nup.flags = []\nup.postToPid(pid)\n`);
   execFileSync('/usr/bin/swiftc', [swift, '-o', binary]);
+  const earlyBinary = resolve(output, 'native-early-character');
+  execFileSync('/usr/bin/swiftc', [resolve('scripts/native-early-character.swift'), '-o', earlyBinary]);
+  const drySchedule = JSON.parse(execFileSync(earlyBinary, ['--dry-run'], { encoding: 'utf8' }));
+  assertDrySchedule(drySchedule);
+  await writeFile(resolve(output, 'early-character-dry-run.json'), JSON.stringify(drySchedule, null, 2));
+  const earlyNative = mode => JSON.parse(execFileSync(earlyBinary, [mode, String(chrome.pid), chromePath, profile], { encoding: 'utf8' }));
   const native = () => {
     const command = execFileSync('/bin/ps', ['-p', String(chrome.pid), '-o', 'command='], { encoding: 'utf8' }).trim();
     assert(command.startsWith(chromePath) && command.includes(`--user-data-dir=${profile}`), 'Native PID/profile mismatch');
@@ -97,6 +104,81 @@ export async function qualify(c) {
     void press(client, surface.session, 'Escape').catch(() => undefined);
     if (surface.page) await waitFor('qualification popup closed', async () => !(await targets(client, 'page')).some(t => t.targetId === surface.page.targetId));
     else await waitForOverlayClosed(client, surface.session);
+  };
+
+  const paletteSnapshot = async session => {
+    try { return { present: true, ...await overlayInputState(client, session) }; }
+    catch (error) {
+      if (String(error).includes('Could not resolve overlay input and palette')) return { present: false };
+      throw error;
+    }
+  };
+  const earlyTrial = async ({ count, kind, temperature, index }) => {
+    // Explicit setup precedes the measured attempt, never follows a missed key
+    // to relabel it. Worker debugging is detached before natural suspension.
+    await sourceFocus(kind);
+    const source = kind === 'overlay' ? sourceSession : settingsSession;
+    const sourceState = () => evaluate(source, '({focused:document.hasFocus(),visibility:document.visibilityState,at:Date.now(),activeTag:document.activeElement?.tagName,activeValue:document.activeElement?.value??null})');
+    const before = await browserState();
+    let idle;
+    if (temperature === 'natural-idle') {
+      const detachedAt = Date.now();
+      await client.send('Target.detachFromTarget', { sessionId: getWorkerSession() });
+      try {
+        await waitFor('natural idle before fixed-delay character attempt', async () => !(await targets(client)).some(t => t.type === 'service_worker' && t.url.startsWith(workerUrl)), 70000);
+      } catch (error) {
+        report.earlyCharacters.push({ count, kind, temperature, index, outcome: 'not-attempted', reason: 'natural idle not established', detachedAt, observedAt: Date.now(), error: String(error), forcedStop: false });
+        await save(); throw error;
+      }
+      idle = { detachedAt, absentAt: Date.now(), forcedStop: false };
+    }
+    const sourceBefore = await sourceState();
+    const initialTargets = await targets(client);
+    const beforePages = new Set(initialTargets.filter(t => t.type === 'page').map(t => t.targetId));
+    const sourcePalette = await paletteSnapshot(source);
+    const workerPresent = initialTargets.some(t => t.type === 'service_worker' && t.url.startsWith(workerUrl));
+    const preconditions = { sourceFocused: sourceBefore.focused, sourceVisible: sourceBefore.visibility === 'visible',
+      paletteAbsent: !sourcePalette.present && !initialTargets.some(t => t.url.startsWith(`${workerUrl}fallback.html#`)),
+      temperatureVerified: temperature === 'natural-idle' ? !workerPresent : workerPresent,
+      sourceBefore, sourcePalette, before, idle, workerPresent };
+    let surface;
+    const measured = await earlyCharacterAttempt({ preconditions,
+      // One native process dispatches BOTH keys. No open()/AX wait or worker
+      // reattachment can intervene between shortcut and character posting.
+      post: () => earlyNative('--post'),
+      observe: async () => {
+        const observationStartedAt = Date.now(), deadline = observationStartedAt + 2000;
+        let palette = { present: false };
+        do {
+          if (kind === 'overlay') surface = { session: source };
+          else if (!surface) {
+            const page = (await targets(client, 'page')).find(t => !beforePages.has(t.targetId) && t.url.startsWith(`${workerUrl}fallback.html#`));
+            if (page) surface = { page, session: await attach(client, page.targetId) };
+          }
+          if (surface) palette = await paletteSnapshot(surface.session);
+          if (palette.present && palette.value === 'g') break;
+          await delay(50);
+        } while (Date.now() < deadline);
+        return { available: true, palette, sourceAfter: await sourceState(), observationStartedAt, observedAt: Date.now(),
+          observationBudgetMs: 2000, noWorkerReattachment: true,
+          limit: 'Readback after native posting; CDP calls may exceed the nominal observation budget. Not paint timing.' };
+      },
+    });
+    report.earlyCharacters.push({ count, kind, temperature, index, ...measured });
+    await save(); // Preserve misses/aborts BEFORE cleanup, reattachment or setup.
+    const recovery = { count, kind, temperature, index, phase: 'separate post-measurement recovery', startedAt: Date.now() };
+    report.earlyRecoveries.push(recovery);
+    try {
+      assert(['hit', 'miss'].includes(measured.outcome), 'Early attempt unmeasured/aborted; stop rather than manufacture a successful trial');
+      recovery.foregroundCheck = earlyNative('--check');
+      assert(recovery.foregroundCheck.foregroundBeforeShortcut, 'External foreground owner: recovery stopped without activation');
+      if (temperature === 'natural-idle') await reattach();
+      const popup = (await targets(client, 'page')).find(t => t.url.startsWith(`${workerUrl}fallback.html#`));
+      if (popup) await client.send('Target.closeTarget', { targetId: popup.targetId });
+      else if ((await paletteSnapshot(source)).present) await close({ session: source });
+      recovery.outcome = 'cleanup complete; next readiness-gated trial has independent setup';
+    } catch (error) { recovery.outcome = 'stopped'; recovery.error = String(error); throw error; }
+    finally { recovery.finishedAt = Date.now(); await save(); }
   };
 
   // Real ordinary departure, plus intentional destination identities.
@@ -334,6 +416,9 @@ export async function qualify(c) {
       await save();
       for (const temperature of ['warm', 'natural-idle']) {
         for (let index = 0; index < (temperature === 'warm' ? 3 : 2); index++) {
+          await earlyTrial({ count, kind, temperature, index });
+          // Separate readiness-gated trial/setup, never recovery inside the
+          // fixed-delay attempt or a replacement for its retained miss.
           await sourceFocus(kind);
           const source = kind === 'overlay' ? sourceSession : settingsSession;
           const before = await browserState();
@@ -415,7 +500,7 @@ export async function qualify(c) {
     }
     await evalWorker(`chrome.tabs.remove(${JSON.stringify(fixtureTabs.map(t => t.id))})`);
   }
-  report.limits.push('Warm/cold workload character samples wait for AX readiness and worker attachment before typing. They do not establish early cold-character preservation. The separate fixed-50ms core probe is retained, is not natural-idle evidence, and is not a universal SLA.');
+  report.limits.push('Warm/cold workload character samples wait for AX readiness and worker attachment before typing. They do not establish early cold-character preservation. Separate earlyCharacters entries use a native fixed-delay schedule without AX/worker readiness gating and retain actual offsets and misses. The original fixed-50ms core probe is also retained; neither establishes a universal SLA.');
   report.limits.push('Native posting timestamp excludes compiled-helper startup. DOM/AX observation intervals include CDP polling/attachment; they are not paint latency or a universal SLA. Fallback first paint is not captured before target attachment. Cancel teardown duration is separate from the first collected source-ready observation. Unfocused, hidden or externally departed samples are incomplete, never readiness passes; no restoration is performed inside the measurement. Readiness is not physical IME or global OS shortcut evidence.');
   await save();
   return report;
