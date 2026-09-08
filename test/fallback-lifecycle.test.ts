@@ -73,6 +73,47 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("fallback registered lifecycle", () => {
+  it.each(['revalidation', 'activation'])('labels a late %s rejection after cancellation as expired, not a global action error', async stage => {
+    const started = deferred<void>();
+    let reject!: (error: Error) => void;
+    const failure = new Promise<never>((_resolve, no) => { reject = no; });
+    const f = setup(stage === 'revalidation'
+      ? { revalidateTarget: async () => { started.resolve(); return failure; } }
+      : { activateTarget: async () => { started.resolve(); return failure; } });
+    const { id, commit, identity } = await f.open();
+    const pending = f.runtime(commit, identity);
+    await started.promise;
+    await f.app.cancel({ kind: 'peek/cancel', sessionId: id }, identity);
+    reject(new Error('obsolete backend failure'));
+    expect(await pending).toEqual({ ok: false, error: 'Peek session expired.' });
+  });
+
+  it.each([false, true])('permits target-window return but honors a new target-window selection=%s before activation', async newSelection => {
+    const started = deferred<void>(), gate = deferred<void>();
+    let focused = 91, activeTargetTab = 9;
+    const activate = vi.fn(async (id: number) => { activeTargetTab = id; return { id, windowId: 20 }; });
+    const focus = vi.fn(async (id: number) => { focused = id; });
+    vi.stubGlobal('chrome', {
+      tabs: { update: activate },
+      windows: {
+        remove: async () => { started.resolve(); await gate.promise; },
+        getLastFocused: async () => ({ id: focused, focused: true }), update: focus,
+      },
+    });
+    const f = setup({ dismissFallback: chromeBrowserAdapter.dismissFallback, activateTarget: chromeBrowserAdapter.activateTarget });
+    const { commit, identity } = await f.open();
+    const pending = f.runtime(commit, identity);
+    await started.promise;
+    focused = 20; f.windowFocus(20);
+    if (newSelection) { activeTargetTab = 3; f.tabActivated({ tabId: 3, windowId: 20 }); }
+    gate.resolve();
+    expect(await pending).toEqual(newSelection ? { ok: false, error: 'Peek session expired.' } : { ok: true });
+    expect(focused).toBe(20);
+    expect(activeTargetTab).toBe(newSelection ? 3 : 2);
+    expect(activate).toHaveBeenCalledTimes(newSelection ? 0 : 1);
+    expect(focus).toHaveBeenCalledTimes(newSelection ? 0 : 1);
+  });
+
   it.each(['source-return', 'source-tab', 'late-return', 'target-then-source'])('limits expected return authority: %s', async departure => {
     const closeStarted = deferred<void>(), closeGate = deferred<void>(), activationStarted = deferred<void>(), activationGate = deferred<void>();
     let focused = 91;

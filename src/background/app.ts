@@ -37,7 +37,7 @@ interface Session {
   committing?: boolean;
   activatingTarget?: { id: number; windowId: number };
   sourceReturnObserved?: boolean;
-  closingTargetWindowId?: number;
+  commitTarget?: { id: number; windowId: number };
   expectedReturnWindowId?: number;
   readinessTimer?: ReturnType<typeof setTimeout>;
   closedWindows?: Set<number>;
@@ -126,9 +126,11 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
     observeTabActivation(tabId, windowId) {
       attention.observeActivation(tabId, windowId);
       for (const session of sessions.values()) {
-        if ((session.kind === "overlay" || session.presentationPhase === "pending" || session.committing) &&
-          windowId === session.source.windowId && tabId !== session.source.id &&
-          tabId !== session.activatingTarget?.id) {
+        const sourceDeparture = (session.kind === "overlay" || session.presentationPhase === "pending" || session.committing) &&
+          windowId === session.source.windowId && tabId !== session.source.id && tabId !== session.activatingTarget?.id;
+        const targetDeparture = session.committing && windowId === session.commitTarget?.windowId && tabId !== session.commitTarget.id &&
+          !(windowId === session.source.windowId && tabId === session.source.id);
+        if (sourceDeparture || targetDeparture) {
           void dismissSession(session).catch((error: unknown) => console.error("Peek source-departure cleanup failed", error));
         }
       }
@@ -139,7 +141,7 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
         if (windowId !== session.expectedReturnWindowId) delete session.expectedReturnWindowId;
         if (windowId === session.surface?.windowId || windowId === session.activatingTarget?.windowId) continue;
         if (session.kind === "overlay" && windowId === session.source.windowId) continue;
-        if (session.kind === "fallback" && session.closingForCommit && (windowId === session.source.windowId || windowId === session.closingTargetWindowId)) {
+        if (session.kind === "fallback" && session.closingForCommit && (windowId === session.source.windowId || windowId === session.commitTarget?.windowId)) {
           session.sourceReturnObserved = true;
           continue;
         }
@@ -289,25 +291,27 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
 
       if (session.committing) return { ok: false, error: "Peek is already switching tabs." };
       session.committing = true;
+      session.commitTarget = { id: message.targetTabId, windowId: message.targetWindowId };
       let target;
       try {
         target = await Effect.runPromise(boundary("revalidate tab", () =>
           browser.revalidateTarget(message.targetTabId, message.targetWindowId),
         ));
       } catch {
+        if (sessions.get(session.id) !== session) return { ok: false, error: "Peek session expired." };
         session.committing = false;
         return { ok: false, error: "Peek could not verify that tab." };
       }
+      if (sessions.get(session.id) !== session) return { ok: false, error: "Peek session expired." };
       if (!target) {
         session.committing = false;
         return { ok: false, error: "That tab is no longer open." };
       }
-      if (sessions.get(message.sessionId) !== session) return { ok: false, error: "Peek session expired." };
 
       try {
         session.closingForCommit = true;
         session.sourceReturnObserved = false;
-        session.closingTargetWindowId = target.windowId;
+        session.commitTarget = target;
         delete session.expectedReturnWindowId;
         if (session.kind === "overlay") {
           await Effect.runPromise(boundary("dismiss overlay", () => browser.dismissOverlay(session.source.id, message.sessionId)));
@@ -329,6 +333,7 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
         removeSession(session);
         return { ok: true };
       } catch {
+        if (sessions.get(session.id) !== session) return { ok: false, error: "Peek session expired." };
         if (session.activatingTarget) removeSession(session);
         else {
           session.closingForCommit = false;

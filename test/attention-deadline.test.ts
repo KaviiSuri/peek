@@ -25,6 +25,38 @@ it("does not discard newly delivered attention while an older save is pending", 
   expect(saved.at(-1)).toEqual({ version: 1, current: { tabId: 3, windowId: 3 }, previous: { tabId: 2, windowId: 2 } });
 });
 
+it('persists ABA return to the acknowledged snapshot after an intervening save is already in flight', async () => {
+  type State = import('../src/attention/attention').AttentionState;
+  const original: State = { version: 1, current: { tabId: 1, windowId: 10 }, previous: { tabId: 2, windowId: 10 } };
+  let storage = structuredClone(original), release!: () => void, issued!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { issued = resolve; });
+  const writes: State[] = [];
+  const adapter = {
+    async loadAttentionState() { return storage; },
+    async resolveFocusedAttention() { return undefined; },
+    async saveAttentionState(state: State) {
+      const snapshot = structuredClone(state); writes.push(snapshot);
+      if (state.current?.tabId === 2) { issued(); await gate; }
+      storage = snapshot;
+    },
+  };
+  const tabs = [1, 2].map(id => ({ id, windowId: 10, title: String(id), url: 'https://fixture.test', lastAccessed: id, current: false }));
+  const tracker = createAttentionTracker(adapter);
+  await tracker.prepareTabs({ id: 1, windowId: 10 }, tabs);
+  await tracker.prepareTabs({ id: 2, windowId: 10 }, tabs);
+  await started;
+  await tracker.prepareTabs({ id: 1, windowId: 10 }, tabs);
+  expect(storage).toEqual(original);
+  release();
+  // Drain the released promise work; do not await a write that a mutation omits.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(writes).toEqual([original, { version: 1, current: { tabId: 2, windowId: 10 }, previous: { tabId: 1, windowId: 10 } }, original]);
+  expect(storage).toEqual(original);
+  const restored = await createAttentionTracker(adapter).prepareTabs({ id: 1, windowId: 10 }, tabs);
+  expect(restored.find(candidate => candidate.previous)?.id).toBe(2);
+});
+
 it("coalesces writes behind an outstanding save and restores the latest previous identity", async () => {
   let storage: unknown = { version: 1, current: { tabId: 1, windowId: 10 } };
   let release!: () => void;
