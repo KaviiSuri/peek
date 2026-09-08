@@ -40,7 +40,11 @@ it("keeps typing available below one-row height without hidden commits, then res
     root.querySelector('[role="option"]')!.dispatchEvent(new MouseEvent("pointerdown", { cancelable: true }));
     expect(sendMessage).not.toHaveBeenCalled();
     key("Tab");
+    const selectedRow = root.querySelector<HTMLElement>('[aria-selected="true"]')!;
+    const scroll = vi.fn();
+    selectedRow.scrollIntoView = scroll;
     resize(74);
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
     expect(list.hidden).toBe(false);
     expect(input.getAttribute("aria-activedescendant")).toBe("peek-tab-2");
     expect([input.value, input.selectionStart, input.selectionEnd, input.selectionDirection]).toEqual(["orion", 1, 4, "backward"]);

@@ -1,3 +1,4 @@
+import { qualify } from './final-qualification.mjs';
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
@@ -134,7 +135,7 @@ async function startFixtureServer() {
       const info = await stat(file);
       if (!info.isFile()) throw new Error("not a file");
       response.writeHead(200, {
-        "content-type": extname(file) === ".html" ? "text/html; charset=utf-8" : "application/octet-stream",
+        "content-type": extname(file) === ".html" ? "text/html; charset=utf-8" : extname(file) === ".svg" ? "image/svg+xml" : extname(file) === ".pdf" ? "application/pdf" : "application/octet-stream",
         "cache-control": "no-store",
       });
       createReadStream(file).pipe(response);
@@ -231,8 +232,8 @@ async function waitForOverlayClosed(client, sessionId) {
 
 async function press(client, sessionId, key, code = key, modifiers = 0) {
   const keyCode = { Enter: 13, Escape: 27, Tab: 9, ArrowLeft: 37, ArrowDown: 40, ArrowUp: 38, j: 74, k: 75, " ": 32 }[key] ?? key.toUpperCase().charCodeAt(0);
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers, windowsVirtualKeyCode: keyCode }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers, windowsVirtualKeyCode: keyCode }, sessionId);
 }
 
 async function capture(client, sessionId, name) {
@@ -329,8 +330,8 @@ async function selectedOverlayTabId(client, sessionId) {
 }
 
 async function replaceOverlayQuery(client, sessionId, query) {
-  await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, commands: ["SelectAll"] }, sessionId);
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65, commands: ["SelectAll"] }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 4, windowsVirtualKeyCode: 65 }, sessionId);
   if (query) {
     await client.send("Input.insertText", { text: query }, sessionId);
   } else {
@@ -387,36 +388,17 @@ async function measureOverlay(client, sessionId) {
     functionDeclaration: "function(){return Promise.all(this.getAnimations().map(animation=>animation.finished.catch(()=>undefined))).then(()=>true)}",
     awaitPromise: true, returnByValue: true,
   }, sessionId);
-  const rect = async (node) => {
-    if (!node) return undefined;
-    const { model } = await client.send("DOM.getBoxModel", { nodeId: node.nodeId }, sessionId);
-    const xs = [model.border[0], model.border[2], model.border[4], model.border[6]];
-    const ys = [model.border[1], model.border[3], model.border[5], model.border[7]];
-    const left = Math.min(...xs);
-    const right = Math.max(...xs);
-    const top = Math.min(...ys);
-    const bottom = Math.max(...ys);
-    return { x: left, y: top, width: right - left, height: bottom - top, top, right, bottom, left };
-  };
-  const metrics = await client.send("Page.getLayoutMetrics", {}, sessionId);
-  const viewport = { width: metrics.cssVisualViewport.clientWidth, height: metrics.cssVisualViewport.clientHeight };
-  const panel = await rect(panelNode);
-  const accessibility = await axTree(client, sessionId);
-  const combobox = axRole(accessibility, "combobox")[0];
-  const focused = combobox?.properties?.some((property) => property.name === "focused" && property.value?.value === true);
-  return {
-    sampledAt: new Date().toISOString(),
-    samplingLimit: "Geometry sampled after the palette's own CSS animations settled; not a first-paint timestamp.",
-    viewport,
-    panel,
-    input: await rect(inputNode),
-    selected: await rect(selectedNode),
-    panelCenterDelta: {
-      x: panel.left + panel.width / 2 - viewport.width / 2,
-      y: panel.top + panel.height / 2 - viewport.height / 2,
-    },
-    activeElement: focused ? "input" : null,
-  };
+  const measured = await client.send('Runtime.callFunctionOn', {
+    objectId: panelObject.objectId,
+    functionDeclaration: `function(){
+      const root=this.getRootNode(), input=root.querySelector('input'), list=root.querySelector('.results');
+      const rect=node=>node ? node.getBoundingClientRect().toJSON() : undefined;
+      const panel=rect(this), viewport={width:innerWidth,height:innerHeight};
+      return {sampledAt:new Date().toISOString(),samplingLimit:'One synchronous DOM geometry snapshot after animation settlement, not paint evidence. Separate snapshots may straddle OS resizing.',viewport,panel,input:rect(input),selected:rect(list.hidden?undefined:list.querySelector('[aria-selected="true"]')),panelCenterDelta:{x:panel.left+panel.width/2-viewport.width/2,y:panel.top+panel.height/2-viewport.height/2},activeElement:root.activeElement===input&&document.hasFocus()?'input':null};
+    }`,
+    returnByValue: true,
+  }, sessionId);
+  return measured.result.value;
 }
 
 function activeTabIdentity(state) {
@@ -461,7 +443,7 @@ down.flags = [.${modifier}]
 down.postToPid(pid)
 usleep(20000)
 let up = CGEvent(keyboardEventSource: source, virtualKey: ${keyCode}, keyDown: false)!
-up.flags = [.${modifier}]
+up.flags = []
 up.postToPid(pid)`;
   execFileSync("/usr/bin/swift", ["-e", script], { stdio: "pipe" });
   return { pid: chrome.pid, executable: chromePath, profile, processCommandVerified: true, preflightPostEventAccess: true, facility: "CoreGraphics CGEvent.postToPid(disposableChromePid)" };
@@ -491,6 +473,7 @@ async function main() {
   ], { stdio: "ignore" });
 
   let client;
+  let failureDiagnostics;
   const fallbackPageEvents = [];
   try {
     const debuggerPort = await waitForDebuggerPort();
@@ -513,6 +496,8 @@ async function main() {
     await client.send("Accessibility.enable", {}, sourceSession);
     await client.send("Target.activateTarget", { targetId: sourcePage.targetId });
     await client.send("Page.bringToFront", {}, sourceSession);
+    activateDisposableChrome(chrome);
+    await waitFor('initial source document focus', async () => (await client.send('Runtime.evaluate', { expression: 'document.hasFocus()', returnByValue: true }, sourceSession)).result.value === true);
     await delay(100);
     await capture(client, sourceSession, "00-before-action.png");
 
@@ -582,12 +567,36 @@ async function main() {
       if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
       return result.result.value;
     };
+    await evalWorker(`(() => {
+      globalThis.peekCommitTrace = [];
+      for (const [name, object, method] of [['tabs.update',chrome.tabs,'update'],['windows.update',chrome.windows,'update']]) {
+        const original = object[method].bind(object);
+        object[method] = (...args) => {
+          const promise = original(...args);
+          void promise.then(value => peekCommitTrace.push({kind:name,at:Date.now(),args,value}), error => peekCommitTrace.push({kind:'error',name,error:String(error)}));
+          return promise;
+        };
+      }
+    })()`);
+    const waitCommitChain = async (start) => {
+      const chain = await waitFor('first completed ordinary activation/focus chain', async () => {
+        const trace = await evalWorker(`peekCommitTrace.slice(${start})`);
+        const active = trace.findIndex(event => event.kind === 'tabs.update');
+        const focus = trace.slice(active + 1).find(event => event.kind === 'windows.update');
+        return active >= 0 && focus ? { active: trace[active], focus, trace } : undefined;
+      }).catch(async error => {
+        await writeFile(resolve(output, 'ordinary-commit-failure.json'), JSON.stringify(await evalWorker('peekCommitTrace'), null, 2));
+        throw error;
+      });
+      return chain.value;
+    };
     const commands = await evalWorker("new Promise((resolve) => chrome.commands.getAll(resolve))");
     const actionCommand = commands.find((command) => command.name === "_execute_action");
     assert(actionCommand?.shortcut === "⌃Space", `Expected physical Control+Space, got ${JSON.stringify(actionCommand?.shortcut)}`);
 
     const stateExpression = `Promise.all([chrome.windows.getAll({populate:true}),chrome.windows.getLastFocused({populate:true})]).then(([windows,last])=>({lastFocusedWindowId:last.id,windows:windows.map(w=>({id:w.id,focused:w.focused,type:w.type,incognito:w.incognito,left:w.left,top:w.top,width:w.width,height:w.height,tabs:(w.tabs||[]).map(t=>({id:t.id,active:t.active,title:t.title,url:t.url}))}))}))`;
     const browserState = async () => ({ ...await evalWorker(stateExpression), observedAt: new Date().toISOString() });
+    failureDiagnostics = async () => writeFile(resolve(output, 'failure-state.json'), JSON.stringify({ state: await browserState(), fallbackTrace: await evalWorker('globalThis.peekFallbackTrace ?? []'), frontmost: execFileSync('/usr/bin/swift', ['-e', 'import AppKit; let a=NSWorkspace.shared.frontmostApplication; print(a?.processIdentifier ?? 0); print(a?.localizedName ?? "unknown")'], { encoding: 'utf8' }), chromePid: chrome.pid }, null, 2));
     const attentionState = () => evalWorker("chrome.storage.session.get('peekAttentionV1').then(value=>value.peekAttentionV1)");
     const waitForAttention = (label, predicate) => waitFor(label, async () => {
       const state = await attentionState();
@@ -652,8 +661,11 @@ async function main() {
     });
     const incrementalTargetId = incrementalIds.value[0];
     await capture(client, sourceSession, "12-search-incremental-prior-partial.png");
+    const incrementalTraceStart = await evalWorker('peekCommitTrace.length');
     await press(client, sourceSession, "Enter");
     await waitForOverlayClosed(client, sourceSession);
+    const incrementalChain = await waitCommitChain(incrementalTraceStart);
+    assert(incrementalChain.active.args[0] === incrementalTargetId, 'First activation chain selected a different incremental target');
     const incrementalCommittedState = await browserState();
     const incrementalCommittedWindow = incrementalCommittedState.windows.find((window) => window.id === incrementalCommittedState.lastFocusedWindowId);
     assert(incrementalCommittedWindow?.tabs.some((tab) => tab.active && tab.id === incrementalTargetId), "Incremental search did not commit its strongest highlighted Orion target");
@@ -1074,6 +1086,7 @@ async function main() {
     const injectionProbe = (tabId) => evalWorker(`chrome.scripting.executeScript({target:{tabId:${tabId}},func:()=>true}).then(()=>({ok:true}),error=>({ok:false,error:String(error?.message||error)}))`);
     const openFallback = async (tabTargetId, label) => {
       console.log(`Fallback QA: ${label}`);
+      activateDisposableChrome(chrome);
       const existing = new Set((await targets(client, "page")).map((target) => target.targetId));
       await client.send("Extensions.triggerAction", { id: extensionId, targetId: tabTargetId });
       const page = await waitFor(`${label} fallback page`, async () => (await targets(client, "page")).find((target) =>
@@ -1118,6 +1131,7 @@ async function main() {
     const manager = await client.send("Target.createTarget", { url: `chrome://extensions/?id=${extensionId}` });
     const managerSession = await attach(client, manager.targetId);
     await waitFor("disposable extension-management API", async () => (await client.send("Runtime.evaluate", { expression: "typeof chrome.developerPrivate?.updateExtensionConfiguration === 'function'", returnByValue: true }, managerSession)).result.value);
+    await evalWorker('globalThis.qaBeforeFileReload = true');
     await client.send("Target.detachFromTarget", { sessionId: workerSession });
     const updateFileGrant = await client.send("Runtime.evaluate", {
       expression: `new Promise((resolve,reject)=>chrome.developerPrivate.updateExtensionConfiguration({extensionId:${JSON.stringify(extensionId)},fileAccess:false},()=>chrome.runtime.lastError?reject(new Error(chrome.runtime.lastError.message)):resolve(true)))`,
@@ -1125,15 +1139,20 @@ async function main() {
     }, managerSession);
     assert(updateFileGrant.result.value === true && !updateFileGrant.exceptionDetails, "Could not revoke only the disposable extension's file grant");
     // Chrome disables the CDP-loaded extension on this configuration update.
+    // Wait for that teardown before reenabling; attaching to a dying worker can
+    // leave Runtime.evaluate waiting on its obsolete target/session.
+    await waitFor('disposable extension disabled for file capability reload', async () => (await client.send('Extensions.getExtensions')).extensions.find(extension => extension.id === extensionId)?.enabled === false);
+    await waitFor('old file-capability worker removed', async () => !(await targets(client)).some(target => target.type === 'service_worker' && target.url.startsWith(`chrome-extension://${extensionId}/`)));
     const reenabled = await client.send("Runtime.evaluate", {
       expression: `new Promise((resolve,reject)=>chrome.management.setEnabled(${JSON.stringify(extensionId)},true,()=>chrome.runtime.lastError?reject(new Error(chrome.runtime.lastError.message)):resolve(true)))`,
       awaitPromise: true, returnByValue: true, userGesture: true,
     }, managerSession);
     assert(reenabled.result.value === true && !reenabled.exceptionDetails, "Could not re-enable the disposable extension after file capability change");
-    const fileWorker = await waitFor("worker after disposable file capability change", async () => (await targets(client)).find((target) => target.type === "service_worker" && target.targetId !== workerTargetId && target.url.startsWith(`chrome-extension://${extensionId}/`)));
+    const fileWorker = await waitFor("worker after disposable file capability change", async () => (await targets(client)).find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)));
     workerTargetId = fileWorker.value.targetId;
     workerSession = await attach(client, workerTargetId);
     await waitFor("Chrome APIs after file capability restart", () => evalWorker("typeof chrome !== 'undefined' && typeof chrome.extension?.isAllowedFileSchemeAccess === 'function'"));
+    assert(await evalWorker('globalThis.qaBeforeFileReload === undefined'), 'File capability change did not restart the worker global');
     const deniedFileAccess = await evalWorker("chrome.extension.isAllowedFileSchemeAccess()");
     assert(deniedFileAccess === false, "Disposable file capability was not denied");
     await evalWorker(`chrome.tabs.update(${fileTab.id},{active:true}).then(()=>chrome.windows.update(${fileTab.windowId},{focused:true}))`);
@@ -1457,6 +1476,17 @@ async function main() {
       await press(client, nativeSession, "Escape");
     }
 
+    let finalQualification;
+    if (process.env.PEEK_QA_FINAL === '1') {
+      assert(process.env.PEEK_QA_NATIVE_SHORTCUT === '1', 'Final qualification requires explicitly enabled disposable native input');
+      finalQualification = await qualify({ client, chrome, chromePath, profile, output, extensionId, sourceSession, sourceTab,
+        sourceChromeTab, sourceUrl, settingsTab, settingsSession, settingsTabTarget: settingsTabTarget.value,
+        evalWorker, browserState, focusSource, targets, attach, waitFor, delay, assert, press, capture,
+        overlayInputState, overlayResultTabIds, waitForOverlay, waitForOverlayClosed, replaceOverlayQuery,
+        measureOverlay, activeTabIdentity, createInterceptedFixturePage, searchFixtureFacts, fixtureOrigins,
+        activateDisposableChrome, CdpClient,
+        getWorkerSession: () => workerSession, setWorkerSession: (session) => { workerSession = session; } });
+    }
     const backgroundBytes = (await stat(resolve(dist, "background.js"))).size;
     const overlayBytes = (await stat(resolve(dist, "overlay.js"))).size;
     const fallbackBytes = (await stat(resolve(dist, "fallback.js"))).size;
@@ -1480,6 +1510,7 @@ async function main() {
         revealSamples,
         samplingLimit: "Sequential Page.captureScreenshot calls are timestamped around each capture. They are not paint timestamps and are not labelled as nominal milliseconds or a true first-frame filmstrip.",
       },
+      finalQualification,
       attention: attentionEvidence,
       fallback: fallbackEvidence,
       search: searchEvidence,
@@ -1534,6 +1565,9 @@ async function main() {
     await writeFile(resolve(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
     console.log(JSON.stringify(report, null, 2));
     console.log(`Evidence: ${output}`);
+  } catch (error) {
+    await failureDiagnostics?.().catch(() => undefined);
+    throw error;
   } finally {
     await writeFile(resolve(output, "fallback-page-events.json"), JSON.stringify(fallbackPageEvents, null, 2));
     if (client) {

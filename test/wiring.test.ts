@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { registerBackground } from "../src/background/wiring";
 import type { BackgroundApp } from "../src/background/app";
 
-function setup() {
+function setup(report = vi.fn()) {
   let actionListener: ((tab: chrome.tabs.Tab) => void) | undefined;
   let messageListener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean | undefined) | undefined;
   let activatedListener: ((info: chrome.tabs.OnActivatedInfo) => void) | undefined;
@@ -28,7 +28,7 @@ function setup() {
     onTabRemoved: { addListener(listener) { removedListener = listener as (tabId: number) => void; } },
     onWindowFocusChanged: { addListener(listener) { focusedListener = listener; } },
     onWindowRemoved: { addListener(listener) { windowRemovedListener = listener; } },
-  }, app);
+  }, app, report);
   return {
     app,
     actionListener: () => actionListener!,
@@ -41,6 +41,56 @@ function setup() {
 }
 
 describe("synchronous MV3 wiring", () => {
+  it.each([true, false])('new invocation owns global action status when old failure=%s settles last', async oldFails => {
+    let resolve!: (value: Awaited<ReturnType<BackgroundApp['invoke']>>) => void, reject!: (error: Error) => void;
+    const old = new Promise<Awaited<ReturnType<BackgroundApp['invoke']>>>((yes, no) => { resolve = yes; reject = no; });
+    const report = vi.fn(), wired = setup(report);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const success = { sessionId: 's', model: { status: 'ready' as const, tabs: [] } };
+    vi.mocked(wired.app.invoke).mockReturnValueOnce(old);
+    if (oldFails) vi.mocked(wired.app.invoke).mockResolvedValueOnce(success);
+    else vi.mocked(wired.app.invoke).mockRejectedValueOnce(new Error('current failure'));
+    wired.actionListener()({ id: 1, windowId: 10 } as chrome.tabs.Tab);
+    wired.actionListener()({ id: 2, windowId: 20 } as chrome.tabs.Tab);
+    await Promise.resolve();
+    if (oldFails) reject(new Error('obsolete failure')); else resolve(success);
+    await Promise.resolve();
+    errorLog.mockRestore();
+    expect(report).toHaveBeenCalledExactlyOnceWith(2, !oldFails);
+  });
+
+  it('does not let an obsolete commit callback overwrite a newer invocation status', async () => {
+    let resolve!: (value: Awaited<ReturnType<BackgroundApp['commit']>>) => void;
+    const old = new Promise<Awaited<ReturnType<BackgroundApp['commit']>>>(yes => { resolve = yes; });
+    const report = vi.fn(), wired = setup(report), respond = vi.fn();
+    wired.actionListener()({ id: 1, windowId: 10 } as chrome.tabs.Tab);
+    await Promise.resolve(); report.mockClear();
+    vi.mocked(wired.app.commit).mockReturnValueOnce(old);
+    wired.messageListener()({ kind: 'peek/commit', sessionId: 's', targetTabId: 3, targetWindowId: 30 }, { tab: { id: 1 } as chrome.tabs.Tab }, respond);
+    wired.actionListener()({ id: 2, windowId: 20 } as chrome.tabs.Tab);
+    await Promise.resolve();
+    resolve({ ok: false, error: 'Peek could not switch to that tab.' });
+    await Promise.resolve();
+    expect(respond).toHaveBeenCalledWith({ ok: false, error: 'Peek could not switch to that tab.' });
+    expect(report).toHaveBeenCalledExactlyOnceWith(2, false);
+  });
+
+  it("reports a non-focusing action error after failed switching but not after cancellation", async () => {
+    const report = vi.fn();
+    const wired = setup(report);
+    const response = vi.fn();
+    const message = { kind: "peek/commit", sessionId: "s", targetTabId: 2, targetWindowId: 3 };
+    const sender = { tab: { id: 1 } as chrome.tabs.Tab };
+    vi.mocked(wired.app.commit).mockResolvedValueOnce({ ok: false, error: "Peek could not switch to that tab." });
+    wired.messageListener()(message, sender, response);
+    await Promise.resolve();
+    expect(report).toHaveBeenCalledExactlyOnceWith(1, true);
+    vi.mocked(wired.app.commit).mockResolvedValueOnce({ ok: false, error: "Peek session expired." });
+    wired.messageListener()(message, sender, response);
+    await Promise.resolve();
+    expect(report).toHaveBeenCalledOnce();
+  });
+
   it("registers action and message listeners before asynchronous work", () => {
     const wired = setup();
     expect(wired.actionListener()).toBeTypeOf("function");

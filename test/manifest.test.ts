@@ -14,7 +14,7 @@ describe("MV3 metadata scope", () => {
   });
 
   it("has only gesture-scoped execution, tab metadata and session-state permissions", () => {
-    expect(manifest.permissions).toEqual(["activeTab", "scripting", "tabs", "storage"]);
+    expect(manifest.permissions).toEqual(["activeTab", "scripting", "tabs", "storage", "favicon"]);
     expect(manifest.host_permissions).toBeUndefined();
     expect(manifest.content_scripts).toBeUndefined();
     expect(manifest.web_accessible_resources).toBeUndefined();

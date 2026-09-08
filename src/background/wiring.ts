@@ -34,14 +34,16 @@ export function registerBackground(
   app: BackgroundApp,
   reportInvocation: (tabId: number, failed: boolean) => void = () => undefined,
 ): void {
+  let invocationGeneration = 0;
   events.onActionClicked.addListener((tab) => {
     if (tab.id === undefined || tab.windowId === undefined || tab.incognito) return;
+    const generation = ++invocationGeneration;
     const tabId = tab.id;
     void app.invoke({ id: tabId, windowId: tab.windowId, ...(tab.url === undefined ? {} : { url: tab.url }) }).then(() => {
-      reportInvocation(tabId, false);
+      if (generation === invocationGeneration) reportInvocation(tabId, false);
     }, (error: unknown) => {
       console.error("Peek invocation failed", error);
-      reportInvocation(tabId, true);
+      if (generation === invocationGeneration) reportInvocation(tabId, true);
     });
   });
 
@@ -76,7 +78,13 @@ export function registerBackground(
 
     const commit = decodeUnknown(CommitMessageSchema, unknownMessage);
     if (commit) {
-      void app.commit(commit, fallbackSender(sender)).then(sendResponse);
+      const generation = invocationGeneration;
+      void app.commit(commit, fallbackSender(sender)).then((response) => {
+        // A failed activation may follow acknowledged teardown, so the palette
+        // is already gone. Leave a non-focusing recovery signal on the action.
+        if (generation === invocationGeneration && !response.ok && response.error !== "Peek session expired." && response.error !== "Peek is already switching tabs." && sender.tab?.id !== undefined) reportInvocation(sender.tab.id, true);
+        sendResponse(response);
+      });
       return true;
     }
 

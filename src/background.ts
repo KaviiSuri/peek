@@ -12,10 +12,10 @@ registerBackground({
   onTabRemoved: chrome.tabs.onRemoved,
   onWindowFocusChanged: chrome.windows.onFocusChanged,
   onWindowRemoved: chrome.windows.onRemoved,
-}, app, (tabId, failed) => {
+}, app, (_tabId, failed) => {
   void Promise.all([
-    chrome.action.setBadgeText({ tabId, text: failed ? "!" : "" }),
-    chrome.action.setTitle({ tabId, title: failed ? "Peek could not open here. Try again." : "Open Peek" }),
+    chrome.action.setBadgeText({ text: failed ? "!" : "" }),
+    chrome.action.setTitle({ title: failed ? "Peek could not complete that action. Open Peek to try again." : "Open Peek" }),
   ]).catch((error: unknown) => console.error("Peek could not update its action status", error));
 });
 app.start();

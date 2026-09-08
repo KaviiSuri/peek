@@ -29,6 +29,49 @@ beforeEach(() => {
 });
 
 describe("Chrome browser adapter", () => {
+  it("does not send late init after cancellation during script injection", async () => {
+    let release!: () => void;
+    executeScript.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    let current = true;
+    const opening = chromeBrowserAdapter.openOverlay({ id: 10, windowId: 1 }, {
+      kind: "peek/init", sessionId: "pending", sourceTabId: 10, sourceWindowId: 1,
+      model: { status: "loading", tabs: [] },
+    }, () => current);
+    current = false;
+    release();
+    await opening;
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("dismisses only its own late init when cancellation crosses the send boundary", async () => {
+    executeScript.mockResolvedValue([]);
+    getWindow.mockResolvedValue({ focused: true, tabs: [{ id: 10, active: true }] });
+    let current = true;
+    sendMessage.mockImplementationOnce(async () => { current = false; });
+    await chromeBrowserAdapter.openOverlay({ id: 10, windowId: 1 }, {
+      kind: "peek/init", sessionId: "pending-send", sourceTabId: 10, sourceWindowId: 1,
+      model: { status: "loading", tabs: [] },
+    }, () => current);
+    expect(sendMessage.mock.calls[1]).toEqual([10, { kind: "peek/dismiss", sessionId: "pending-send" }]);
+  });
+
+  it("never focuses a window after cancellation during exact tab activation", async () => {
+    let release!: (tab: unknown) => void;
+    updateTab.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    let current = true;
+    const activation = chromeBrowserAdapter.activateTarget({ id: 21, windowId: 7, current: false }, () => current);
+    current = false;
+    release({ id: 21, windowId: 7 });
+    await activation;
+    expect(updateWindow).not.toHaveBeenCalled();
+  });
+
+  it("does not focus the stale containing window when the activated target has moved", async () => {
+    updateTab.mockResolvedValue({ id: 21, windowId: 8 });
+    await expect(chromeBrowserAdapter.activateTarget({ id: 21, windowId: 7, current: false }, () => true)).rejects.toThrow("target changed");
+    expect(updateWindow).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("reads Chrome file-scheme capability without changing the grant (%s)", async (allowed) => {
     isAllowedFileSchemeAccess.mockResolvedValue(allowed);
     await expect(chromeBrowserAdapter.fileSchemeAccessAllowed()).resolves.toBe(allowed);
@@ -97,7 +140,8 @@ describe("Chrome browser adapter", () => {
       sourceWindowId: 1,
       model: { status: "ready" as const, tabs: [] },
     };
-    await chromeBrowserAdapter.openOverlay({ id: 10, windowId: 1 }, message);
+    getWindow.mockResolvedValue({ focused: true, tabs: [{ id: 10, active: true }] });
+    await chromeBrowserAdapter.openOverlay({ id: 10, windowId: 1 }, message, () => true);
     expect(executeScript).toHaveBeenCalledWith({ target: { tabId: 10 }, files: ["overlay.js"] });
     expect(sendMessage).toHaveBeenCalledWith(10, message);
     expect(executeScript.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[0]!);
@@ -138,9 +182,10 @@ describe("Chrome browser adapter", () => {
   it("routes fallback model delivery through extension messaging and makes teardown idempotent", async () => {
     runtimeSendMessage.mockResolvedValue(undefined);
     removeWindow.mockRejectedValue(new Error("No window with id: 91."));
+    getLastFocused.mockResolvedValue({ id: 4, focused: true });
     const message = { kind: "peek/model" as const, sessionId: "s", model: { status: "ready" as const, tabs: [] } };
     await chromeBrowserAdapter.updateFallback(message);
-    await expect(chromeBrowserAdapter.dismissFallback(91)).resolves.toBeUndefined();
+    await expect(chromeBrowserAdapter.dismissFallback(91)).resolves.toEqual({ windowId: 4, focused: true });
     expect(runtimeSendMessage).toHaveBeenCalledWith(message);
     expect(removeWindow).toHaveBeenCalledWith(91);
   });
@@ -189,9 +234,9 @@ describe("Chrome browser adapter", () => {
   });
 
   it("activates the exact tab before focusing its containing window", async () => {
-    updateTab.mockResolvedValue({});
+    updateTab.mockResolvedValue({ id: 21, windowId: 7 });
     updateWindow.mockResolvedValue({});
-    await chromeBrowserAdapter.activateTarget({ id: 21, windowId: 7, current: false });
+    await chromeBrowserAdapter.activateTarget({ id: 21, windowId: 7, current: false }, () => true);
     expect(updateTab).toHaveBeenCalledWith(21, { active: true });
     expect(updateWindow).toHaveBeenCalledWith(7, { focused: true });
     expect(updateTab.mock.invocationCallOrder[0]).toBeLessThan(updateWindow.mock.invocationCallOrder[0]!);
