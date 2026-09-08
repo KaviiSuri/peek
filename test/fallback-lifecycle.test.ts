@@ -73,6 +73,26 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("fallback registered lifecycle", () => {
+  it("acknowledges automatic post-close source focus before starting the cancellable target chain", async () => {
+    let queuedSourceFocus = false;
+    const calls: string[] = [];
+    const f = setup({ dismissFallback: chromeBrowserAdapter.dismissFallback, activateTarget: chromeBrowserAdapter.activateTarget });
+    const deliverSourceFocus = () => {
+      if (queuedSourceFocus) { queuedSourceFocus = false; f.windowFocus(10); calls.push('source-focus'); }
+    };
+    vi.stubGlobal('chrome', {
+      windows: {
+        async remove() { queuedSourceFocus = true; },
+        async getLastFocused() { deliverSourceFocus(); return { id: 10, focused: true }; },
+        async update(id: number) { calls.push(`focus-${id}`); },
+      },
+      tabs: { async update() { calls.push('activate'); deliverSourceFocus(); return { id: 2, windowId: 20 }; } },
+    });
+    const { commit, identity } = await f.open();
+    expect(await f.runtime(commit, identity)).toEqual({ ok: true });
+    expect(calls).toEqual(['source-focus', 'activate', 'focus-20']);
+  });
+
   it.each(["overlay", "fallback"])("keeps cancellation authority through pending activation in %s", async (kind) => {
     const activated = deferred<chrome.tabs.Tab>();
     const started = deferred<void>();

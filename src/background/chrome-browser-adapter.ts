@@ -144,6 +144,10 @@ export const chromeBrowserAdapter: BrowserAdapter = {
       // Only Chrome's exact missing-window diagnostic is idempotent cleanup.
       if (!(error instanceof Error) || error.message !== `No window with id: ${windowId}.`) throw error;
     }
+    // Chrome may resolve removal before delivering the automatic source-window
+    // focus event. Read back the post-close focus while teardown still owns that
+    // transition, before beginning the cancellable activation/focus chain.
+    await chrome.windows.getLastFocused();
   },
 
   fileSchemeAccessAllowed(): Promise<boolean> {
