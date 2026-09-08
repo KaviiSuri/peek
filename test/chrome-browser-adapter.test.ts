@@ -182,9 +182,10 @@ describe("Chrome browser adapter", () => {
   it("routes fallback model delivery through extension messaging and makes teardown idempotent", async () => {
     runtimeSendMessage.mockResolvedValue(undefined);
     removeWindow.mockRejectedValue(new Error("No window with id: 91."));
+    getLastFocused.mockResolvedValue({ id: 4, focused: true });
     const message = { kind: "peek/model" as const, sessionId: "s", model: { status: "ready" as const, tabs: [] } };
     await chromeBrowserAdapter.updateFallback(message);
-    await expect(chromeBrowserAdapter.dismissFallback(91)).resolves.toBeUndefined();
+    await expect(chromeBrowserAdapter.dismissFallback(91)).resolves.toEqual({ windowId: 4, focused: true });
     expect(runtimeSendMessage).toHaveBeenCalledWith(message);
     expect(removeWindow).toHaveBeenCalledWith(91);
   });

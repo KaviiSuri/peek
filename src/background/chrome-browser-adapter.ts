@@ -137,17 +137,18 @@ export const chromeBrowserAdapter: BrowserAdapter = {
     await chrome.runtime.sendMessage(message);
   },
 
-  async dismissFallback(windowId: number): Promise<void> {
+  async dismissFallback(windowId: number) {
     try {
       await chrome.windows.remove(windowId);
     } catch (error) {
       // Only Chrome's exact missing-window diagnostic is idempotent cleanup.
       if (!(error instanceof Error) || error.message !== `No window with id: ${windowId}.`) throw error;
     }
-    // Chrome may resolve removal before delivering the automatic source-window
-    // focus event. Read back the post-close focus while teardown still owns that
-    // transition, before beginning the cancellable activation/focus chain.
-    await chrome.windows.getLastFocused();
+    // Return the observed post-close focus for the session owner to validate.
+    // This read is not an event barrier: newer observed departures must still
+    // invalidate the session even when this snapshot says source-focused.
+    const returned = await chrome.windows.getLastFocused();
+    return { windowId: returned.id ?? -1, focused: returned.focused === true };
   },
 
   fileSchemeAccessAllowed(): Promise<boolean> {

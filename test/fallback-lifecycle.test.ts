@@ -29,7 +29,7 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
     async createFallback(_source, sessionId) { created.resolve(sessionId); return surface; },
     presentFallback: vi.fn(async (_source, _surface, current) => current()),
     updateFallback: vi.fn(async (_message: ModelMessage) => undefined),
-    dismissFallback: vi.fn(async (_id: number) => undefined),
+    dismissFallback: vi.fn(async (_id: number) => ({ windowId: 10, focused: true })),
     fallbackPageUrl: () => "chrome-extension://peek/fallback.html",
     fileSchemeAccessAllowed: vi.fn(async () => true),
     revalidateTarget: vi.fn(async (id, windowId) => ({ id, windowId, current: false })),
@@ -73,6 +73,41 @@ function setup(overrides: Partial<BrowserAdapter> = {}) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("fallback registered lifecycle", () => {
+  it.each([
+    ['overlay', 30], ['overlay', -1], ['fallback', 30], ['fallback', -1],
+  ] as const)('honors observed departure during %s teardown acknowledgement: %s', async (kind, departure) => {
+    const gate = deferred<void>();
+    const issued = deferred<void>();
+    const activate = vi.fn(async () => ({ id: 2, windowId: 20 }));
+    const focus = vi.fn(async () => undefined);
+    vi.stubGlobal('chrome', {
+      tabs: { sendMessage: async () => { issued.resolve(); await gate.promise; }, update: activate },
+      windows: {
+        remove: async () => { issued.resolve(); await gate.promise; },
+        // Deliberately stale source-focused snapshot: observed departure wins.
+        getLastFocused: async () => ({ id: 10, focused: true }), update: focus,
+      },
+    });
+    const f = setup({ dismissOverlay: chromeBrowserAdapter.dismissOverlay, dismissFallback: chromeBrowserAdapter.dismissFallback, activateTarget: chromeBrowserAdapter.activateTarget });
+    let id: string, identity: FallbackSender;
+    if (kind === 'fallback') ({ id, identity } = await f.open());
+    else { f.source.url = 'https://ordinary.test'; id = (await f.invoke()).sessionId; identity = { tabId: 1, windowId: 10 }; }
+    const commit = f.runtime({ kind: 'peek/commit', sessionId: id, targetTabId: 2, targetWindowId: 20 }, identity);
+    await issued.promise;
+    f.windowFocus(departure);
+    gate.resolve();
+    expect(await commit).toEqual({ ok: false, error: 'Peek session expired.' });
+    expect(activate).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it.each([{ windowId: 30, focused: true }, { windowId: 10, focused: false }])('rejects an unsafe post-close focus readback without waiting for its event: %j', async returned => {
+    const f = setup({ dismissFallback: async () => returned });
+    const { commit, identity } = await f.open();
+    expect(await f.runtime(commit, identity)).toEqual({ ok: false, error: 'Peek session expired.' });
+    expect(f.adapter.activateTarget).not.toHaveBeenCalled();
+  });
+
   it("acknowledges automatic post-close source focus before starting the cancellable target chain", async () => {
     let queuedSourceFocus = false;
     const calls: string[] = [];
@@ -242,14 +277,14 @@ describe("fallback registered lifecycle", () => {
     const { identity, commit } = await f.open();
     expect(await f.runtime(commit, identity)).toEqual({ ok: false, error: "Peek could not switch to that tab." });
     expect(f.adapter.activateTarget).not.toHaveBeenCalled();
-    vi.mocked(f.adapter.dismissFallback).mockResolvedValue(undefined);
+    vi.mocked(f.adapter.dismissFallback).mockResolvedValue({ windowId: 10, focused: true });
     expect(await f.runtime(commit, identity)).toEqual({ ok: true });
   });
 
   it("allows its own acknowledged removal during commit but not a prior browser-close", async () => {
     const f = setup();
     const { identity, commit } = await f.open();
-    vi.mocked(f.adapter.dismissFallback).mockImplementation(async (id) => { f.windowRemoved(id); f.windowFocus(20); });
+    vi.mocked(f.adapter.dismissFallback).mockImplementation(async (id) => { f.windowRemoved(id); f.windowFocus(20); return { windowId: 20, focused: true }; });
     expect(await f.runtime(commit, identity)).toEqual({ ok: true });
     expect(f.adapter.activateTarget).toHaveBeenCalledOnce();
   });

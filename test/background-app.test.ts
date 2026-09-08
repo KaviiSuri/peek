@@ -30,7 +30,7 @@ function fakeBrowser(overrides: Partial<BrowserAdapter> = {}) {
     async createFallback() { calls.push("create-fallback"); return { tabId: 90, windowId: 91 }; },
     async presentFallback() { return true; },
     async updateFallback(_message: ModelMessage) { calls.push("update-fallback"); },
-    async dismissFallback(_windowId: number) { calls.push("dismiss-fallback"); },
+    async dismissFallback(_windowId: number) { calls.push("dismiss-fallback"); return { windowId: 4, focused: true }; },
     fallbackPageUrl() { return "chrome-extension://peek-extension/fallback.html"; },
     async fileSchemeAccessAllowed() { return true; },
     async revalidateTarget(tabId: number, windowId: number): Promise<TargetTab | undefined> { calls.push("revalidate"); return { id: tabId, windowId, current: false }; },
@@ -320,7 +320,7 @@ describe("production background composition", () => {
         if (sessionIds.length === 1) { await firstCreation; return { tabId: 90, windowId: 91 }; }
         return { tabId: 92, windowId: 93 };
       },
-      async dismissFallback(windowId) { fake.calls.push("dismiss-fallback"); dismissed.push(windowId); },
+      async dismissFallback(windowId) { fake.calls.push("dismiss-fallback"); dismissed.push(windowId); return { windowId: 4, focused: true }; },
     });
     const app = createBackgroundApp(fake.adapter);
     const first = app.invoke({ id: 1, windowId: 4, url: "chrome://settings/" });

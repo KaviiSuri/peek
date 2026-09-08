@@ -36,6 +36,9 @@ interface Session {
   closingForCommit?: boolean;
   committing?: boolean;
   activatingTarget?: { id: number; windowId: number };
+  sourceReturnObserved?: boolean;
+  closingTargetWindowId?: number;
+  expectedReturnWindowId?: number;
   readinessTimer?: ReturnType<typeof setTimeout>;
   closedWindows?: Set<number>;
 }
@@ -124,7 +127,7 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
       attention.observeActivation(tabId, windowId);
       for (const session of sessions.values()) {
         if ((session.kind === "overlay" || session.presentationPhase === "pending") &&
-          !session.closingForCommit && windowId === session.source.windowId && tabId !== session.source.id &&
+          (session.kind === "overlay" || !session.closingForCommit) && windowId === session.source.windowId && tabId !== session.source.id &&
           tabId !== session.activatingTarget?.id) {
           void dismissSession(session).catch((error: unknown) => console.error("Peek source-departure cleanup failed", error));
         }
@@ -133,9 +136,16 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
     observeWindowFocus(windowId) {
       attention.observeWindowFocus(windowId);
       for (const session of sessions.values()) {
-        if (session.closingForCommit || windowId === session.surface?.windowId ||
-          windowId === session.activatingTarget?.windowId) continue;
+        if (windowId === session.surface?.windowId || windowId === session.activatingTarget?.windowId) continue;
         if (session.kind === "overlay" && windowId === session.source.windowId) continue;
+        if (session.kind === "fallback" && session.closingForCommit && (windowId === session.source.windowId || windowId === session.closingTargetWindowId)) {
+          session.sourceReturnObserved = true;
+          continue;
+        }
+        if (windowId === session.expectedReturnWindowId) {
+          delete session.expectedReturnWindowId;
+          continue;
+        }
         if (session.presentationPhase === "pending" && windowId === session.source.windowId) continue;
         // A newer observed focus departure invalidates even a previously captured
         // focused:true API snapshot. The popup's own focus and commit teardown are
@@ -295,11 +305,16 @@ export function createBackgroundApp(browser: BrowserAdapter): BackgroundApp {
 
       try {
         session.closingForCommit = true;
+        session.sourceReturnObserved = false;
+        session.closingTargetWindowId = target.windowId;
+        delete session.expectedReturnWindowId;
         if (session.kind === "overlay") {
           await Effect.runPromise(boundary("dismiss overlay", () => browser.dismissOverlay(session.source.id, message.sessionId)));
         } else {
           session.closingForCommit = true;
-          await Effect.runPromise(boundary("dismiss fallback", () => browser.dismissFallback(session.surface!.windowId)));
+          const returned = await Effect.runPromise(boundary("dismiss fallback", () => browser.dismissFallback(session.surface!.windowId)));
+          if (!returned || !returned.focused || (returned.windowId !== session.source.windowId && returned.windowId !== target.windowId)) removeSession(session);
+          else if (!session.sourceReturnObserved) session.expectedReturnWindowId = returned.windowId;
         }
         if (sessions.get(message.sessionId) !== session) return { ok: false, error: "Peek session expired." };
         const sourceStillCurrent = target.id === session.source.id &&
