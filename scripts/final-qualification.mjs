@@ -9,7 +9,7 @@ export async function qualify(c) {
     sourceChromeTab, sourceUrl, settingsTab, settingsSession, settingsTabTarget,
     evalWorker, browserState, focusSource, targets, attach, waitFor, delay, assert,
     press, capture, overlayInputState, overlayResultTabIds, waitForOverlay,
-    waitForOverlayClosed, replaceOverlayQuery, measureOverlay, activeTabIdentity,
+    waitForOverlayClosed, measureOverlay, activeTabIdentity,
     createInterceptedFixturePage, searchFixtureFacts, fixtureOrigins, activateDisposableChrome,
     getWorkerSession, setWorkerSession, CdpClient } = c;
   const report = { samples: [], visuals: [], departures: [], limits: [] };
@@ -20,6 +20,22 @@ export async function qualify(c) {
     const result = await client.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, session);
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
+  };
+  const replaceOverlayQuery = async (_client, session, query) => {
+    const tree = await client.send('DOM.getDocument', { depth: -1, pierce: true }, session);
+    let input;
+    const visit = node => {
+      const attrs = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, i) => [node.attributes[i * 2], node.attributes[i * 2 + 1]]));
+      if (node.nodeName === 'INPUT' && attrs['aria-label'] === 'Find a tab by title or URL') input = node;
+      for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) visit(child);
+    };
+    visit(tree.root);
+    assert(input, 'Query input absent');
+    const { object } = await client.send('DOM.resolveNode', { nodeId: input.nodeId }, session);
+    await client.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){this.setSelectionRange(0,this.value.length)}` }, session);
+    if (query) await client.send('Input.insertText', { text: query }, session);
+    else await client.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){this.value='';this.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}))}` }, session);
+    assert((await overlayInputState(client, session)).value === query, 'Query not retained');
   };
   const selectedContrast = async session => {
     const tree = await client.send('DOM.getDocument', { depth: -1, pierce: true }, session);
