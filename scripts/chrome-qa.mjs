@@ -585,7 +585,7 @@ async function main() {
     assert(actionCommand?.shortcut === "⌃Space", `Expected physical Control+Space, got ${JSON.stringify(actionCommand?.shortcut)}`);
 
     const stateExpression = `Promise.all([chrome.windows.getAll({populate:true}),chrome.windows.getLastFocused({populate:true})]).then(([windows,last])=>({lastFocusedWindowId:last.id,windows:windows.map(w=>({id:w.id,focused:w.focused,type:w.type,incognito:w.incognito,left:w.left,top:w.top,width:w.width,height:w.height,tabs:(w.tabs||[]).map(t=>({id:t.id,active:t.active,title:t.title,url:t.url}))}))}))`;
-    const browserState = () => evalWorker(stateExpression);
+    const browserState = async () => ({ ...await evalWorker(stateExpression), observedAt: new Date().toISOString() });
     const attentionState = () => evalWorker("chrome.storage.session.get('peekAttentionV1').then(value=>value.peekAttentionV1)");
     const waitForAttention = (label, predicate) => waitFor(label, async () => {
       const state = await attentionState();
@@ -1142,6 +1142,7 @@ async function main() {
       y: firstFallback.popup.top + firstFallback.popup.height / 2 - (sourceWindow.top + sourceWindow.height / 2),
     };
     const fallbackContentGeometry = await measureOverlay(client, firstFallback.session);
+    const fallbackWindowAfterContentMeasurement = await browserState();
     await replaceOverlayQuery(client, firstFallback.session, "peek");
     const fallbackParityIds = await overlayResultTabIds(client, firstFallback.session);
     assert(JSON.stringify(fallbackParityIds) === JSON.stringify(ordinaryParityIds), "Ordinary and fallback search ordering diverged for identical eligible metadata");
@@ -1279,11 +1280,17 @@ async function main() {
       chromeWebStoreUrl: webStoreUrl,
       injectionProbes: { ordinaryHttps: ordinaryInjectionProbe, chromeSettings: settingsInjectionProbe, chromeWebStore: webStoreInjectionProbe },
       popup: {
+        sourceBoundsObservedAt: settingsBeforeEscape.observedAt,
         sourceBounds: { left: sourceWindow.left, top: sourceWindow.top, width: sourceWindow.width, height: sourceWindow.height },
+        actualBoundsObservedAt: firstFallback.state.observedAt,
         actualBounds: { left: firstFallback.popup.left, top: firstFallback.popup.top, width: firstFallback.popup.width, height: firstFallback.popup.height },
         centerDelta: popupCenterDelta,
         contentGeometry: fallbackContentGeometry,
-        limit: "Chrome/OS may clamp requested outer-window bounds. Delta compares enumerated actual popup and source-window bounds; it is not a screen-centering claim.",
+        windowAfterContentMeasurement: {
+          observedAt: fallbackWindowAfterContentMeasurement.observedAt,
+          window: fallbackWindowAfterContentMeasurement.windows.find((window) => window.id === firstFallback.popup.id),
+        },
+        limit: "Source, outer bounds, content geometry and later window bounds are separate timestamped observations. Chrome/OS may clamp or rearrange windows between them; a later content viewport need not match the earlier outer dimensions. Delta compares the recorded initial popup and source-window bounds, not screen centering or a simultaneous frame capture.",
       },
       cleanup: { escape: true, focusAwayPreservedWindowId: sourceChromeTab.windowId, browserChromeClose: { method: browserCloseNativeTarget ? "PID-targeted native Cmd+W dispatched by Chrome, not a page Escape handler" : "CDP Target.closeTarget; not native window-control evidence", target: browserCloseNativeTarget }, cleanReopen: true },
       selection: { currentSourceNoOp: true, crossWindowExactTabId: sourceChromeTab.id, crossWindowId: sourceChromeTab.windowId, firstCompletedCommit: completedCrossCommit.value },
