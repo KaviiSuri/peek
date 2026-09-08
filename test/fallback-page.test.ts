@@ -35,6 +35,9 @@ it("uses the shipped palette/search/keyboard route in the actual fallback entry 
   try {
     await import("../src/fallback");
     await mountedPromise;
+    // The browser may deliver blur while the popup is still mounting unfocused.
+    window.dispatchEvent(new Event("blur"));
+    expect(close).not.toHaveBeenCalled();
     const root = document.querySelector<HTMLElement>("#peek-extension-host")!.shadowRoot!;
     const input = root.querySelector<HTMLInputElement>("input")!;
     const selected = () => root.querySelector('[aria-selected="true"]')?.id;

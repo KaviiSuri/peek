@@ -6,6 +6,7 @@ const controller = installPaletteRuntime((message, sender) =>
   sender.id === chrome.runtime.id && sender.tab === undefined &&
   typeof message === "object" && message !== null && "sessionId" in message && message.sessionId === sessionId,
   () => window.close(),
+  false, // This page owns focus only after presentation; see ownedFocus below.
 );
 
 async function start(): Promise<void> {

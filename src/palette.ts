@@ -121,7 +121,7 @@ export interface PaletteController {
   dismiss(sessionId: string): void;
 }
 
-export function createPaletteController(onCancel: () => void = () => undefined): PaletteController {
+export function createPaletteController(onCancel: () => void = () => undefined, watchSourceDeparture = true): PaletteController {
   let activeSessionId: string | undefined;
   let host: HTMLElement | undefined;
   let priorFocus: HTMLElement | null = null;
@@ -450,9 +450,11 @@ export function createPaletteController(onCancel: () => void = () => undefined):
       };
       const handleDeparture = () => { if (ownsSession()) cancel(false); };
       const handleVisibility = () => { if (document.visibilityState === "hidden") handleDeparture(); };
-      window.addEventListener("blur", handleDeparture);
-      document.addEventListener("visibilitychange", handleVisibility);
-      window.addEventListener("pagehide", handleDeparture);
+      if (watchSourceDeparture) {
+        window.addEventListener("blur", handleDeparture);
+        document.addEventListener("visibilitychange", handleVisibility);
+        window.addEventListener("pagehide", handleDeparture);
+      }
       window.addEventListener("resize", handleResize);
       input.addEventListener("focusin", handleFocusIn);
       input.addEventListener("focusout", handleFocusOut);
@@ -499,11 +501,12 @@ export function createPaletteController(onCancel: () => void = () => undefined):
 export function installPaletteRuntime(
   acceptMessage: (message: unknown, sender: chrome.runtime.MessageSender) => boolean = () => true,
   onCancel: () => void = () => undefined,
+  watchSourceDeparture = true,
 ): PaletteController {
   const globalWindow = window as Window & { [CONTROLLER_KEY]?: PaletteController };
   if (globalWindow[CONTROLLER_KEY]) return globalWindow[CONTROLLER_KEY];
 
-  const controller = createPaletteController(onCancel);
+  const controller = createPaletteController(onCancel, watchSourceDeparture);
   globalWindow[CONTROLLER_KEY] = controller;
   chrome.runtime.onMessage.addListener((unknownMessage, sender, sendResponse) => {
     if (!acceptMessage(unknownMessage, sender)) return false;
