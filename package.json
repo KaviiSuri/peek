@@ -10,7 +10,8 @@
     "build": "node scripts/build.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "qa:chrome": "npm run build && node scripts/chrome-qa.mjs"
+    "qa:chrome": "npm run build && node scripts/chrome-qa.mjs",
+    "qa:keyboard": "npm run build && node scripts/qa-keyboard.mjs"
   },
   "dependencies": {
     "effect": "3.22.1"

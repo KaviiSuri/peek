@@ -1,4 +1,5 @@
 import { qualify } from './final-qualification.mjs';
+import { CdpClient } from './cdp-client.mjs';
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
@@ -47,57 +48,6 @@ const searchFixtureFacts = [
   ["mdn", "chrome.tabs.query() — reference", "mdn", "/API/chrome.tabs/query"],
   ["local", "Vite + Peek dev server", "local", "/popup/index.html"],
 ];
-
-class CdpClient {
-  constructor(url) {
-    this.socket = new WebSocket(url);
-    this.nextId = 0;
-    this.pending = new Map();
-    this.listeners = new Map();
-  }
-
-  async connect() {
-    await new Promise((resolveOpen, reject) => {
-      this.socket.addEventListener("open", resolveOpen, { once: true });
-      this.socket.addEventListener("error", reject, { once: true });
-    });
-    this.socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      const pending = this.pending.get(message.id);
-      if (pending) {
-        this.pending.delete(message.id);
-        clearTimeout(pending.timer);
-        if (message.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
-        else pending.resolve(message.result);
-        return;
-      }
-      for (const listener of this.listeners.get(message.method) ?? []) listener(message.params, message.sessionId);
-    });
-  }
-
-  send(method, params = {}, sessionId) {
-    return new Promise((resolveResult, reject) => {
-      const id = ++this.nextId;
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method}: timed out waiting for CDP response`));
-      }, 10000);
-      this.pending.set(id, { resolve: resolveResult, reject, method, timer });
-      this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-    });
-  }
-
-  on(method, listener) {
-    const listeners = this.listeners.get(method) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(method, listeners);
-    return () => listeners.delete(listener);
-  }
-
-  close() {
-    this.socket.close();
-  }
-}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -248,6 +198,7 @@ async function overlayResultTabIds(client, sessionId) {
   const ids = [];
   const visit = (node) => {
     const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+    if (node.contentDocument) visit(node.contentDocument);
     if (attributes.role === "option" && attributes.id?.startsWith("peek-tab-")) ids.push(Number(attributes.id.slice("peek-tab-".length)));
     for (const child of node.children ?? []) visit(child);
     for (const shadow of node.shadowRoots ?? []) visit(shadow);
@@ -264,6 +215,7 @@ async function overlayInputState(client, sessionId) {
     const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
     if (node.nodeName === "INPUT" && attributes["aria-label"] === "Find a tab by title or URL") inputNode = node;
     if (attributes.class?.split(/\s+/).includes("palette")) paletteNode = node;
+    if (node.contentDocument) visit(node.contentDocument);
     for (const child of node.children ?? []) visit(child);
     for (const shadow of node.shadowRoots ?? []) visit(shadow);
   };
@@ -283,6 +235,7 @@ async function setOverlaySelection(client, sessionId, start, end, direction) {
   const document = await client.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
   let inputNode;
   const visit = (node) => {
+    if (node.contentDocument) visit(node.contentDocument);
     const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
     if (node.nodeName === "INPUT" && attributes["aria-label"] === "Find a tab by title or URL") inputNode = node;
     for (const child of node.children ?? []) visit(child);
@@ -305,6 +258,7 @@ async function overlayDigitRows(client, sessionId) {
   const rows = [];
   const visit = (node) => {
     const attrs = attributes(node);
+    if (node.contentDocument) visit(node.contentDocument);
     if (attrs.role === "option" && attrs.id?.startsWith("peek-tab-")) {
       const digit = (node.children ?? []).find((child) => attributes(child).class?.split(/\s+/).includes("digit"));
       rows.push({ id: Number(attrs.id.slice("peek-tab-".length)), digit: digit ? text(digit) : undefined });
@@ -321,6 +275,7 @@ async function selectedOverlayTabId(client, sessionId) {
   let selectedId;
   const visit = (node) => {
     const attributes = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, index) => [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+    if (node.contentDocument) visit(node.contentDocument);
     if (attributes["aria-selected"] === "true" && attributes.id?.startsWith("peek-tab-")) selectedId = Number(attributes.id.slice("peek-tab-".length));
     for (const child of node.children ?? []) visit(child);
     for (const shadow of node.shadowRoots ?? []) visit(shadow);
@@ -342,6 +297,7 @@ async function replaceOverlayQuery(client, sessionId, query) {
       if (node.nodeName === "INPUT" && attributes["aria-label"] === "Find a tab by title or URL") inputNode = node;
       for (const child of node.children ?? []) visit(child);
       for (const shadow of node.shadowRoots ?? []) visit(shadow);
+      if (node.contentDocument) visit(node.contentDocument);
     };
     visit(document.root);
     assert(inputNode, "Could not resolve overlay input to clear its query");
@@ -372,6 +328,7 @@ async function measureOverlay(client, sessionId) {
   const nodes = [];
   const visit = (node) => {
     nodes.push(node);
+    if (node.contentDocument) visit(node.contentDocument);
     for (const child of node.children ?? []) visit(child);
     for (const shadow of node.shadowRoots ?? []) visit(shadow);
   };
@@ -393,7 +350,8 @@ async function measureOverlay(client, sessionId) {
     functionDeclaration: `function(){
       const root=this.getRootNode(), input=root.querySelector('input'), list=root.querySelector('.results');
       const rect=node=>node ? node.getBoundingClientRect().toJSON() : undefined;
-      const panel=rect(this), viewport={width:innerWidth,height:innerHeight};
+      const document=this.ownerDocument, view=document.defaultView;
+      const panel=rect(this), viewport={width:view.innerWidth,height:view.innerHeight};
       return {sampledAt:new Date().toISOString(),samplingLimit:'One synchronous DOM geometry snapshot after animation settlement, not paint evidence. Separate snapshots may straddle OS resizing.',viewport,panel,input:rect(input),selected:rect(list.hidden?undefined:list.querySelector('[aria-selected="true"]')),panelCenterDelta:{x:panel.left+panel.width/2-viewport.width/2,y:panel.top+panel.height/2-viewport.height/2},activeElement:root.activeElement===input&&document.hasFocus()?'input':null};
     }`,
     returnByValue: true,

@@ -121,7 +121,10 @@ export interface PaletteController {
   dismiss(sessionId: string): void;
 }
 
-export function createPaletteController(onCancel: () => void = () => undefined, watchSourceDeparture = true): PaletteController {
+export function createPaletteController(onCancel: (restoreFocus: boolean) => void = () => undefined, watchSourceDeparture = true, ownerDocument: Document = globalThis.document): PaletteController {
+  const document = ownerDocument;
+  const window = document.defaultView as Window & typeof globalThis;
+  const HTMLElement = window.HTMLElement;
   let activeSessionId: string | undefined;
   let host: HTMLElement | undefined;
   let priorFocus: HTMLElement | null = null;
@@ -150,7 +153,7 @@ export function createPaletteController(onCancel: () => void = () => undefined, 
     rememberClosed(sessionId);
     teardown(restoreFocus);
     void chrome.runtime.sendMessage({ kind: "peek/cancel", sessionId }).catch(() => undefined);
-    onCancel();
+    onCancel(restoreFocus);
   }
 
   return {
@@ -502,11 +505,12 @@ export function installPaletteRuntime(
   acceptMessage: (message: unknown, sender: chrome.runtime.MessageSender) => boolean = () => true,
   onCancel: () => void = () => undefined,
   watchSourceDeparture = true,
+  createController: typeof createPaletteController = createPaletteController,
 ): PaletteController {
   const globalWindow = window as Window & { [CONTROLLER_KEY]?: PaletteController };
   if (globalWindow[CONTROLLER_KEY]) return globalWindow[CONTROLLER_KEY];
 
-  const controller = createPaletteController(onCancel, watchSourceDeparture);
+  const controller = createController(onCancel, watchSourceDeparture);
   globalWindow[CONTROLLER_KEY] = controller;
   chrome.runtime.onMessage.addListener((unknownMessage, sender, sendResponse) => {
     if (!acceptMessage(unknownMessage, sender)) return false;

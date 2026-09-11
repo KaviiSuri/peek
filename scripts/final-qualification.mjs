@@ -28,6 +28,7 @@ export async function qualify(c) {
     let input;
     const visit = node => {
       const attrs = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, i) => [node.attributes[i * 2], node.attributes[i * 2 + 1]]));
+      if (node.contentDocument) visit(node.contentDocument);
       if (node.nodeName === 'INPUT' && attrs['aria-label'] === 'Find a tab by title or URL') input = node;
       for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) visit(child);
     };
@@ -44,6 +45,7 @@ export async function qualify(c) {
     let row;
     const visit = node => {
       const attrs = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, i) => [node.attributes[i * 2], node.attributes[i * 2 + 1]]));
+      if (node.contentDocument) visit(node.contentDocument);
       if (attrs['aria-selected'] === 'true') row = node;
       for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) visit(child);
     };
@@ -203,6 +205,7 @@ export async function qualify(c) {
       const tree = await client.send('DOM.getDocument', { depth: -1, pierce: true }, surface.session);
       const icons = [];
       const visit = node => {
+        if (node.contentDocument) visit(node.contentDocument);
         if (node.nodeName === 'IMG') {
           const attrs = Object.fromEntries(Array.from({ length: (node.attributes?.length ?? 0) / 2 }, (_, i) => [node.attributes[i * 2], node.attributes[i * 2 + 1]]));
           if (attrs.src?.startsWith('data:image/png;base64,')) icons.push({ prefix: attrs.src.slice(0, 40), length: attrs.src.length });
