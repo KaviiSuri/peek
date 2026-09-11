@@ -34,6 +34,14 @@ The palette first mounts a complete, centred loading composition with its input 
 
 Tab enters selection mode without changing the query. In selection mode, arrows or j/k move the highlight and the visible 1–9 badges commit the corresponding rows. Tab returns to typing and restores the exact caret or text-selection range. Shift+Tab is deliberately not intercepted; when focus leaves the closed-shadow palette, Peek cancels without restoring over the new focus destination. Composition keystrokes are left to the browser/IME and cannot navigate, commit, toggle mode or cancel Peek prematurely. Escape, focus leaving the transient fallback, its browser close button, and explicit commit close the fallback window. Peek never forces the source window forward after the user has focused another normal window.
 
+## Keyboard isolation
+
+On ordinary pages, Peek renders the shared palette in an initial `about:blank` iframe inside a closed shadow root. Keyboard events in that document do not reach the page's capture or bubble handlers. This adds no host permissions, web-accessible resources, or remote scripts. It is an event boundary, not a security boundary against a hostile same-origin page.
+
+**Early typing before the palette mounts or gains focus remains an open bug.** This change does not recover those characters, and waiting until visible is not considered a fix.
+
+`npm run qa:keyboard` runs a focused, headless-only Chrome regression with a disposable profile and local fixtures, including restrictive `frame-src`/`style-src` CSP. It covers keyboard isolation, renderer editing commands, focus return/departure, resize, retired sessions, and top-frame message provenance. Evidence defaults to `.tmp/keyboard-qa`; override with `PEEK_KEYBOARD_OUTPUT`. It does not post native desktop events or access the OS clipboard. Clipboard/IME assertions are synthetic default-cancellation checks, not native qualification.
+
 ## Disposable Chrome QA
 
 ```sh

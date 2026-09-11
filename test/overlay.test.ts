@@ -17,7 +17,10 @@ beforeAll(async () => {
   vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (this: Element, init) {
     return nativeAttachShadow.call(this, { ...init, mode: "open" });
   });
-  await import("../src/overlay");
+  // Renderer/runtime unit seam. The ordinary iframe boundary is exercised in
+  // headless Chrome: jsdom cannot create frames inside an outer shadow root.
+  const { installPaletteRuntime } = await import("../src/palette");
+  installPaletteRuntime();
 });
 
 function keydown(input: HTMLInputElement, key: string, init: KeyboardEventInit = {}) {
@@ -45,7 +48,7 @@ function openOverlay(sessionId = "session-1") {
   return { host, root, input: root.querySelector<HTMLInputElement>("input")! };
 }
 
-describe("ordinary-page overlay", () => {
+describe("shared palette renderer and runtime", () => {
   it("dismisses on window blur even while the shadow input remains active", () => {
     const { host, root, input } = openOverlay("external-window-blur");
     expect(root.activeElement).toBe(input);
