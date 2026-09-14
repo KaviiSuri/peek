@@ -1,142 +1,128 @@
 import { describe, expect, it } from "vitest";
-import { meaningfulLocation, searchTabs } from "../src/search/search";
+import { createTabSearch, meaningfulLocation, searchTabs } from "../src/search/search";
 import type { PeekTab } from "../src/shared/model";
 import { normalSearchFixture, stressSearchFixture } from "./fixtures/search-fixtures";
 
-const tabs: PeekTab[] = [
-  { id: 1, windowId: 1, title: "Current notes", url: "https://docs.example/current", lastAccessed: 500, current: true },
-  { id: 2, windowId: 2, title: "Fix retry in Orion scheduler", url: "https://github.com/acme/orion/pull/21", lastAccessed: 300, current: false },
-  { id: 3, windowId: 1, title: "Orion repository", url: "https://github.com/acme/orion", lastAccessed: 400, current: false },
-  { id: 4, windowId: 1, title: "Retry notes", url: "https://docs.example/atlas", lastAccessed: 600, current: false },
-];
+const tab = (id: number, title: string, overrides: Partial<PeekTab> = {}): PeekTab => ({
+  id, title, url: "https://x.test", windowId: 1, current: false, lastAccessed: 0, ...overrides,
+});
+const ids = (tabs: readonly PeekTab[], query: string) => searchTabs(tabs, query).map((item) => item.id);
 
-describe("searchTabs", () => {
-  it("filters case-insensitive title and URL tokens with stronger combined evidence first", () => {
-    expect(searchTabs(tabs, "ORION retry").map((tab) => tab.id)).toEqual([2, 4, 3]);
-    expect(searchTabs(tabs, "github orion").map((tab) => tab.id)).toEqual([3, 2]);
+describe("fzf tab search", () => {
+  it("preserves previous-first, non-current MRU order only for blank queries", () => {
+    const tabs = [tab(1, "Notes", { current: true, lastAccessed: 900 }), tab(2, "Notes", { previous: true }), tab(3, "Notes", { lastAccessed: 500 }), tab(4, "Notes", { lastAccessed: 100 })];
+    expect(ids(tabs, "")).toEqual([2, 3, 4, 1]);
+    expect(ids(tabs, " \t ")).toEqual([2, 3, 4, 1]);
+    // Equal text retains discovery order, not recency or previous/current flags.
+    expect(ids(tabs, "notes")).toEqual([1, 2, 3, 4]);
+    expect(ids([tab(1, "Older", { previous: false, lastAccessed: 1 }), tab(2, "Newer", { lastAccessed: 2 })], "")).toEqual([2, 1]);
   });
 
-  it("keeps an eligible non-current tab selected before the current tab on an empty query", () => {
-    expect(searchTabs(tabs, "").map((tab) => tab.id)).toEqual([4, 3, 2, 1]);
+  it("matches short abbreviations and subsequences spanning word boundaries", () => {
+    expect(ids([tab(1, "GitHub"), tab(2, "Notes")], "gh")).toEqual([1]);
+    expect(ids([tab(1, "Alpha Beta Console"), tab(2, "Notes")], "abc")).toEqual([1]);
+    expect(ids([tab(1, "a very wide b then c")], "abc")).toEqual([1]);
   });
 
-  it("puts a trustworthy previous distinct tab before newer MRU candidates", () => {
-    const withPrevious = tabs.map((tab) => ({ ...tab, previous: tab.id === 2 }));
-    expect(searchTabs(withPrevious, "").map((tab) => tab.id)).toEqual([2, 4, 3, 1]);
+  it("rewards compact runs, word starts and camelCase rather than recent use", () => {
+    expect(ids([tab(1, "a very wide b then c", { lastAccessed: 999 }), tab(2, "abc")], "abc")).toEqual([2, 1]);
+    expect(ids([tab(1, "mygithub"), tab(2, "GitHub")], "gh")).toEqual([2, 1]);
+    expect(ids([tab(1, "Alpha Beta Console"), tab(2, "albatrossbackgroundcache")], "abc")).toEqual([1, 2]);
   });
 
-  it("orders the agreed 30-tab ambiguity cases by coverage and textual evidence before recency", () => {
+  it("requires every space-separated term, in either order and across title/location", () => {
+    const tabs = [tab(1, "Auth fix", { url: "https://github.com/team/project/pull/912" }), tab(2, "Auth notes"), tab(3, "Other", { url: "https://github.com/team/project/pull/912" })];
+    expect(ids(tabs, "github auth 912")).toEqual([1]);
+    expect(ids(tabs, "912 auth github")).toEqual([1]);
+    expect(ids(tabs, "auth zzzzzzz")).toEqual([]);
+  });
+
+  it("uses smart case per term without destroying candidate capitalization", () => {
+    const tabs = [tab(1, "GitHub Auth"), tab(2, "github auth")];
+    expect(ids(tabs, "github auth").sort()).toEqual([1, 2]);
+    expect(ids(tabs, "GitHub auth")).toEqual([1]);
+    expect(ids(tabs, "GITHUB")).toEqual([]);
+  });
+
+  it("supports exact, prefix, suffix, exclusion and OR syntax", () => {
+    const tabs = [tab(1, "GitHub alpha", { url: "https://x.test/alpha" }), tab(2, "Go to hub beta", { url: "https://x.test/beta" }), tab(3, "Docs beta", { url: "https://x.test/beta" })];
+    expect(ids(tabs, "'github")).toEqual([1]);
+    expect(ids(tabs, "^GitHub")).toEqual([1]);
+    expect(ids(tabs, "alpha$")).toEqual([1]);
+    expect(ids(tabs, "!beta")).toEqual([1]);
+    expect(ids(tabs, "alpha | docs").sort()).toEqual([1, 3]);
+    expect(ids(tabs, "!zzzzzz")).toHaveLength(3);
+  });
+
+  it("does not implement substitutions or transpositions", () => {
+    const tabs = [tab(1, "github")];
+    expect(ids(tabs, "gthb")).toEqual([1]);
+    expect(ids(tabs, "githib")).toEqual([]);
+    expect(ids(tabs, "githbu")).toEqual([]);
+  });
+
+  it("breaks score ties by shorter label then stable discovery order, without a GitHub special case", () => {
+    const tabs = [tab(1, "Match extended", { lastAccessed: 999 }), tab(2, "Match"), tab(3, "Match")];
+    expect(ids(tabs, "match")).toEqual([2, 3, 1]);
+    const equalLengthHosts = [tab(1, "project", { url: "https://gitlab.com/team/project" }), tab(2, "project", { url: "https://github.com/team/project" })];
+    expect(ids(equalLengthHosts, "project")).toEqual([1, 2]);
+  });
+
+  it("preserves punctuation as query content rather than silently clearing it", () => {
+    const tabs = [tab(1, "C++ reference"), tab(2, "Meeting notes")];
+    expect(ids(tabs, "++")).toEqual([1]);
+    expect(ids(tabs, "%%")).toEqual([]);
+  });
+
+  it("normalizes canonical Unicode but does not silently strip accents", () => {
+    const tabs = [tab(1, "Cafe\u0301", { url: "https://x.zz" }), tab(2, "Cafe", { url: "https://x.zz" })];
+    expect(ids(tabs, "café")).toEqual([1]);
+    expect(ids(tabs, "cafe")).toEqual([2]);
+  });
+
+  it("returns the published matcher's UTF-16 positions for the displayed title and URL", () => {
+    const [match] = createTabSearch([tab(1, "🧭 GitHub Cafe\u0301", { url: "https://x.test/#auth" })])("gh auth");
+    expect(match?.title).toBe("🧭 GitHub Café");
+    expect([...match!.titlePositions].sort((a, b) => a - b)).toEqual([3, 6]);
+    const location = match!.location;
+    expect([...match!.locationPositions].sort((a, b) => a - b).map((index) => location[index]).join("")).toBe("auth");
+    expect(createTabSearch([tab(1, "Notes")])("!zzzzz")[0]?.titlePositions.size).toBe(0);
+  });
+
+  it("reuses a model index without mutating metadata or leaking a previous query's positions", () => {
+    const tabs = Object.freeze([Object.freeze(tab(1, "GitHub")), Object.freeze(tab(2, "Notes"))]);
+    const find = createTabSearch(tabs);
+    const first = find("gh");
+    expect(find("notes").map((match) => match.tab.id)).toEqual([2]);
+    expect(find("").every((match) => match.titlePositions.size === 0 && match.locationPositions.size === 0)).toBe(true);
+    expect(find("gh")).toEqual(first);
+    expect(first[0]?.tab).toBe(tabs[0]);
+  });
+
+  it("handles the existing30/100-tab ambiguity fixtures with all-term filtering", () => {
     expect(normalSearchFixture).toHaveLength(30);
-
-    const orionRetry = searchTabs(normalSearchFixture, "orion retry").map((tab) => tab.id);
-    expect(orionRetry.slice(0, 2).sort((left, right) => left - right)).toEqual([1, 4]);
-    expect(Math.max(orionRetry.indexOf(1), orionRetry.indexOf(4))).toBeLessThan(Math.min(orionRetry.indexOf(6), orionRetry.indexOf(9)));
-
-    expect(searchTabs(normalSearchFixture, "orion")[0]?.id).toBe(6);
-    expect(searchTabs(normalSearchFixture, "github auth 880")[0]?.id).toBe(11);
-
-    const shortened = searchTabs(normalSearchFixture, "sched rtry").map((tab) => tab.id);
-    expect(shortened.slice(0, 2)).toEqual([4, 1]);
-    expect(Math.max(shortened.indexOf(1), shortened.indexOf(4))).toBeLessThan(Math.min(shortened.indexOf(3), shortened.indexOf(9)));
-    expect(searchTabs(normalSearchFixture, "SCHED RTRY").slice(0, 2).map((tab) => tab.id)).toEqual([4, 1]);
-  });
-
-  it("keeps recency behind nonempty textual evidence and uses it only for genuine textual ties", () => {
-    const repositoryChildrenMadeNewer = normalSearchFixture.map((tab) => tab.id === 5 ? { ...tab, lastAccessed: 999_999 } : tab);
-    expect(searchTabs(repositoryChildrenMadeNewer, "orion")[0]?.id).toBe(6);
-
-    const duplicates: PeekTab[] = [
-      { id: 81, windowId: 1, title: "Hiring pipeline tracker", url: "https://docs.google.com/spreadsheets/d/older/edit", lastAccessed: 18, current: false },
-      { id: 82, windowId: 2, title: "Hiring pipeline tracker", url: "https://docs.google.com/spreadsheets/d/newer/edit", lastAccessed: 200, current: false },
-      { id: 83, windowId: 1, title: "Untitled spreadsheet", url: "https://docs.google.com/spreadsheets/d/hiring-pipeline/edit", lastAccessed: 900, current: false },
-    ];
-    expect(searchTabs(duplicates, "hiring pipeline").map((tab) => tab.id)).toEqual([82, 81, 83]);
-  });
-
-  it("uses recency rather than empty-query previous priority for nonempty textual ties", () => {
-    const tiedText: PeekTab[] = [
-      { id: 291, windowId: 1, title: "Deployment notes", url: "https://example.test/deployment", lastAccessed: 1, current: false, previous: true },
-      { id: 292, windowId: 1, title: "Deployment notes", url: "https://example.test/deployment", lastAccessed: 999, current: true, previous: false },
-    ];
-    expect(searchTabs(tiedText, "deployment notes").map((tab) => tab.id)).toEqual([292, 291]);
-  });
-
-  it("ranks exact clue words above newer substring fragments when coverage is equal", () => {
-    const directness: PeekTab[] = [
-      { id: 293, windowId: 1, title: "Audit draft queue", url: "https://work.example/item/293", lastAccessed: 1, current: false },
-      { id: 294, windowId: 1, title: "Auditability queued", url: "https://work.example/item/294", lastAccessed: 999, current: false },
-    ];
-    expect(searchTabs(directness, "audit queue").map((tab) => tab.id)).toEqual([293, 294]);
-  });
-
-  it("limits repository-home preference to the supported GitHub hostname", () => {
-    const hosts: PeekTab[] = [
-      { id: 301, windowId: 1, title: "northstar/lumen", url: "https://github.unrelated/northstar/lumen", lastAccessed: 999, current: false },
-      { id: 302, windowId: 1, title: "northstar/lumen", url: "https://github.com/northstar/lumen", lastAccessed: 1, current: false },
-    ];
-    expect(searchTabs(hosts, "lumen").map((tab) => tab.id)).toEqual([302, 301]);
-  });
-
-  it("keeps literal textual strength ahead of an approximate repository-home match", () => {
-    const directnessTabs: PeekTab[] = [
-      { id: 311, windowId: 1, title: "northstar/retry", url: "https://github.com/northstar/retry", lastAccessed: 999, current: false },
-      { id: 312, windowId: 1, title: "Rtry notes", url: "https://notes.example/rtry", lastAccessed: 1, current: false },
-    ];
-    expect(searchTabs(directnessTabs, "rtry").map((tab) => tab.id)).toEqual([312, 311]);
-  });
-
-  it("keeps a nonblank punctuation query literal instead of treating it as an empty query", () => {
-    const punctuationTabs: PeekTab[] = [
-      { id: 201, windowId: 1, title: "C++ reference", url: "https://developer.example/cpp", lastAccessed: 1, current: false },
-      { id: 202, windowId: 1, title: "Meeting notes", url: "https://notes.example/today", lastAccessed: 999, current: false, previous: true },
-    ];
-    expect(searchTabs(punctuationTabs, "++").map((tab) => tab.id)).toEqual([201]);
-    expect(searchTabs(punctuationTabs, "%%")).toEqual([]);
-    expect(searchTabs(punctuationTabs, "   ").map((tab) => tab.id)).toEqual([202, 201]);
-  });
-
-  it("does not infer words absent from title and URL but retrieves explicit incident and postmortem clues", () => {
-    expect(searchTabs(normalSearchFixture, "outage")).toEqual([]);
-    expect(searchTabs(normalSearchFixture, "orion incident")[0]?.id).toBe(23);
-    expect(searchTabs(normalSearchFixture, "postmortem")[0]?.id).toBe(23);
-  });
-
-  it("generalizes repository, cross-field, numeric and dropped-character behavior beyond the named fixture", () => {
-    const holdout: PeekTab[] = [
-      { id: 101, windowId: 1, title: "northstar/lumen", url: "https://github.com/northstar/lumen", lastAccessed: 1, current: false },
-      { id: 102, windowId: 1, title: "Fix retry in scheduler", url: "https://github.com/northstar/lumen/pull/451", lastAccessed: 4, current: false },
-      { id: 103, windowId: 2, title: "Scheduler retry backoff fails", url: "https://github.com/northstar/lumen/issues/450", lastAccessed: 3, current: false },
-      { id: 104, windowId: 2, title: "Lumen release checklist", url: "https://github.com/northstar/lumen/issues/455", lastAccessed: 10_000, current: false },
-      { id: 105, windowId: 2, title: "Fix retry in uploader", url: "https://github.com/northstar/atlas/pull/91", lastAccessed: 9_000, current: false },
-      { id: 106, windowId: 1, title: "Auth middleware cleanup", url: "https://github.com/harbor/pulse/pull/912", lastAccessed: 2, current: false },
-      { id: 107, windowId: 1, title: "Auth middleware cleanup", url: "https://github.com/harbor/pulse/pull/911", lastAccessed: 8_000, current: false },
-    ];
-
-    expect(searchTabs(holdout, "lumen")[0]?.id).toBe(101);
-    expect(searchTabs(holdout, "lumen retry").slice(0, 2).map((tab) => tab.id).sort()).toEqual([102, 103]);
-    expect(searchTabs(holdout, "github auth 912")[0]?.id).toBe(106);
-    expect(searchTabs(holdout, "sched rtry").slice(0, 2).map((tab) => tab.id)).toEqual([103, 102]);
-  });
-
-  it("handles an ambiguity-preserving 100-tab workload deterministically", () => {
+    expect(ids(normalSearchFixture, "orion retry").slice(0, 2).sort()).toEqual([1, 4]);
+    expect(ids(normalSearchFixture, "orion retry")).not.toContain(6);
+    expect(ids(normalSearchFixture, "github auth 880")[0]).toBe(11);
+    expect(ids(normalSearchFixture, "sched rtry").slice(0, 2)).toEqual([1, 4]);
+    expect(ids(normalSearchFixture, "orion incident")[0]).toBe(23);
+    expect(ids(normalSearchFixture, "postmortem")[0]).toBe(23);
+    const find = createTabSearch(stressSearchFixture);
+    const start = performance.now();
+    const first = find("sched rtry");
+    console.info(`100-tab fzf query: ${(performance.now() - start).toFixed(3)}ms, informational only`);
+    expect(first[0]?.tab.id).toBe(1);
+    expect(find("sched rtry")).toEqual(first);
     expect(stressSearchFixture).toHaveLength(100);
-    const startedAt = performance.now();
-    const first = searchTabs(stressSearchFixture, "sched rtry").map((tab) => tab.id);
-    const elapsedMs = performance.now() - startedAt;
-    const second = searchTabs(stressSearchFixture, "sched rtry").map((tab) => tab.id);
-
-    expect(first[0]).toBe(4);
-    expect(first.indexOf(1)).toBeLessThan(first.indexOf(3));
-    expect(first.indexOf(1)).toBeLessThan(first.indexOf(9));
-    expect(first).toEqual(second);
-    expect(new Set(stressSearchFixture.map((tab) => new URL(tab.url).hostname)).size).toBeLessThan(10);
-    console.info(`100-tab ambiguity search measured ${elapsedMs.toFixed(3)} ms (informational; no pass threshold)`);
   });
 });
 
 describe("meaningfulLocation", () => {
-  it("keeps the host and useful path while dropping a root slash", () => {
+  it("keeps searchable ports, paths, query and fragment while excluding scheme and credentials", () => {
     expect(meaningfulLocation("https://github.com/acme/orion/pull/21?view=files")).toBe("github.com/acme/orion/pull/21?view=files");
     expect(meaningfulLocation("https://example.com/")).toBe("example.com");
+    expect(meaningfulLocation("https://user:password@example.com:8443/app?x=1#auth")).toBe("example.com:8443/app?x=1#auth");
+    expect(meaningfulLocation("https://example.com/app#section/")).toBe("example.com/app#section/");
+    expect(meaningfulLocation("not a URL")).toBe("not a URL");
   });
 });

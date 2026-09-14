@@ -1,5 +1,8 @@
 # Peek v0 first-release specification
 
+> **0.2.0 search amendment:** The owner approved replacing the custom matcher with the fzf JavaScript port, following their fzf-backed Telescope configuration. For nonempty queries, all terms must match; smart case, fzf scores, shorter-label ties and stable discovery order replace the original coverage/phrase/repository/recency rules below. Blank-query previous-tab/MRU ordering remains. Match positions drive safe text highlighting. See [the current behavior](../README.md#fuzzy-search) and [source/adoption details](discovery/telescope-fuzzy-matching.md). Earlier search-policy prose below is historical where it conflicts.
+
+
 **Status:** implementation in progress; the initial ordinary-page slice is implemented and verified in Chrome, while remaining v0 slices and full release acceptance are pending.
 
 **Product target:** Google Chrome. Dia was Kavii’s discovery test browser and remains separately labelled evidence; this specification does not promise support for Dia or Chromium browsers generally.

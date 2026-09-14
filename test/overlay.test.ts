@@ -179,6 +179,31 @@ describe("shared palette renderer and runtime", () => {
     expect(acknowledge).not.toHaveBeenCalled();
   });
 
+  it("renders fzf positions safely without splitting normalized text or emoji graphemes", () => {
+    const title = "<img src=x onerror=alert(1)> 🧑‍💻 Cafe\u0301 GitHub";
+    listener?.({
+      kind: "peek/init", sessionId: "fzf-highlight", sourceTabId: 1, sourceWindowId: 1,
+      model: { status: "ready", tabs: [{ id: 2, windowId: 1, title, url: "https://x.test/#auth", lastAccessed: 0, current: false }] },
+    }, {}, () => undefined);
+    const root = document.querySelector<HTMLElement>("#peek-extension-host")!.shadowRoot!;
+    const input = root.querySelector<HTMLInputElement>("input")!;
+    const query = (value: string) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+    const marked = (selector: string) => Array.from(root.querySelectorAll(`${selector} mark`)).map((mark) => mark.textContent).join("");
+    query("gh");
+    expect(marked(".title")).toBe("GH");
+    expect(root.querySelector(".title")?.textContent).toBe(title.normalize("NFC"));
+    expect(root.querySelector(".title img")).toBeNull();
+    query("🧑");
+    expect(marked(".title")).toBe("🧑‍💻");
+    query("café");
+    expect(marked(".title")).toBe("Café");
+    query("auth");
+    expect(marked(".path")).toBe("auth");
+    expect(marked(".title")).toBe("");
+    query("");
+    expect(root.querySelectorAll("mark")).toHaveLength(0);
+  });
+
   it("routes imperfect-clue input through ordered rows, reconciles a missing highlight, and commits the exact visible target", async () => {
     const sessionId = "session-search-path";
     listener?.({
@@ -192,10 +217,10 @@ describe("shared palette renderer and runtime", () => {
 
     input.value = "sched rtry";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(visibleIds().slice(0, 2)).toEqual([4, 1]);
-    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-4");
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(visibleIds().slice(0, 2)).toEqual([1, 4]);
     expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-1");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(root.querySelector<HTMLElement>('[aria-selected="true"]')?.id).toBe("peek-tab-4");
 
     input.value = "postmortem";
     input.dispatchEvent(new Event("input", { bubbles: true }));

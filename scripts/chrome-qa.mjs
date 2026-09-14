@@ -646,24 +646,24 @@ async function main() {
     };
 
     const orionRetryIds = await checkSearch("orion retry", (ids) =>
-      ids.slice(0, 2).every((id) => [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]].includes(id)) &&
-      ids.indexOf(fixtureIds["atlas-retry"]) > 1 && ids.indexOf(fixtureIds["orion-home"]) > 1,
+      ids.length >= 2 && ids.slice(0, 2).every((id) => [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]].includes(id)) &&
+      !ids.includes(fixtureIds["atlas-retry"]) && !ids.includes(fixtureIds["orion-home"]),
     "orion retry ordering");
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
-    await checkSearch("orion", (ids) => ids[0] === fixtureIds["orion-home"], "bare orion repository-home preference");
+    await checkSearch("orion", (ids) => ids[0] === fixtureIds["orion-home"], "bare orion shorter-label ranking");
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
     await checkSearch("sched rtry", (ids) =>
-      ids.slice(0, 2).every((id) => [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]].includes(id)) &&
-      ids.indexOf(fixtureIds["orion-scheduler"]) > 1 && ids.indexOf(fixtureIds["atlas-retry"]) > 1,
+      ids.length >= 2 && ids.slice(0, 2).every((id) => [fixtureIds["orion-retry-pr"], fixtureIds["orion-retry-issue"]].includes(id)) &&
+      !ids.includes(fixtureIds["orion-scheduler"]) && !ids.includes(fixtureIds["atlas-retry"]),
     "dropped-character ordering");
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
-    await checkSearch("outage", (ids) => ids.length === 0, "honest outage miss");
+    await checkSearch("'outage", (ids) => ids.length === 0, "explicit exact outage miss");
     await replaceOverlayQuery(client, sourceSession, "postmortem");
     await waitFor("explicit postmortem result", async () => {
       const ids = await overlayResultTabIds(client, sourceSession);
@@ -672,7 +672,7 @@ async function main() {
     await press(client, sourceSession, "Escape");
     await waitForOverlayClosed(client, sourceSession);
 
-    const authIds = await checkSearch("GITHUB AUTH 880", (ids) => ids[0] === fixtureIds["auth-880"], "case-normalized cross-field PR ordering");
+    const authIds = await checkSearch("github auth 880", (ids) => ids[0] === fixtureIds["auth-880"], "fzf cross-field PR ordering");
     await capture(client, sourceSession, "11-search-github-auth-880.png");
     await press(client, sourceSession, "Enter");
     await waitForOverlayClosed(client, sourceSession);

@@ -11,15 +11,42 @@ import {
   type InteractionState,
   type TextSelection,
 } from "./interaction/interaction";
-import { meaningfulLocation, searchTabs } from "./search/search";
+import { createTabSearch } from "./search/search";
 import type { InitMessage, PeekModel, PeekTab } from "./shared/model";
 import { decodeDismissMessage, decodeInitMessage, decodeModelMessage } from "./shared/overlay-protocol";
 
 const CONTROLLER_KEY = "__peekOverlayControllerV1";
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+function appendMatchText(node: HTMLElement, text: string, positions: ReadonlySet<number>): void {
+  if (positions.size === 0) { node.textContent = text; return; }
+  let point = 0;
+  let run = "";
+  let marked = false;
+  const flush = () => {
+    if (!run) return;
+    if (marked) {
+      const mark = node.ownerDocument.createElement("mark");
+      mark.className = "match";
+      mark.textContent = run;
+      node.append(mark);
+    } else node.append(node.ownerDocument.createTextNode(run));
+    run = "";
+  };
+  for (const { segment } of graphemes.segment(text)) {
+    const length = segment.length;
+    const matches = Array.from({ length }, (_, offset) => point + offset).some((index) => positions.has(index));
+    if (matches !== marked) { flush(); marked = matches; }
+    run += segment;
+    point += length;
+  }
+  flush();
+}
+
 const styles = `
   :host { all: initial; color-scheme: light dark; }
   * { box-sizing: border-box; }
+  .match { background: transparent; color: inherit; font-weight: 750; }
   .backdrop {
     position: fixed; inset: 0; z-index: 2147483647;
     display: grid; place-items: center;
@@ -207,7 +234,9 @@ export function createPaletteController(onCancel: (restoreFocus: boolean) => voi
       backdrop.append(palette);
       shadow.append(style, backdrop);
 
-      let results = searchTabs(model.tabs, "");
+      let findMatches = createTabSearch(model.tabs);
+      let matches = findMatches("");
+      let results = matches.map((match) => match.tab);
       let state: InteractionState = initialInteraction(results);
       let committing = false;
       let composing = false;
@@ -298,7 +327,8 @@ export function createPaletteController(onCancel: (restoreFocus: boolean) => voi
           return;
         }
 
-        for (const tab of results) {
+        for (const match of matches) {
+          const tab = match.tab;
           const item = document.createElement("li");
           item.className = "row";
           item.id = `peek-tab-${tab.id}`;
@@ -321,10 +351,10 @@ export function createPaletteController(onCancel: (restoreFocus: boolean) => voi
           stack.className = "stack";
           const title = document.createElement("span");
           title.className = "title";
-          title.textContent = tab.title;
+          appendMatchText(title, match.title, match.titlePositions);
           const path = document.createElement("span");
           path.className = "path";
-          path.textContent = meaningfulLocation(tab.url);
+          appendMatchText(path, match.location, match.locationPositions);
           stack.append(title, path);
           item.append(favicon, stack);
           item.addEventListener("pointermove", () => {
@@ -370,7 +400,8 @@ export function createPaletteController(onCancel: (restoreFocus: boolean) => voi
       input.addEventListener("compositionend", () => { composing = false; });
       input.addEventListener("input", () => {
         if (state.mode !== "typing") return;
-        results = searchTabs(model.tabs, input.value);
+        matches = findMatches(input.value);
+        results = matches.map((match) => match.tab);
         state = setQuery(state, input.value, results);
         render();
       });
@@ -477,7 +508,9 @@ export function createPaletteController(onCancel: (restoreFocus: boolean) => voi
       applyModel = (nextModel) => {
         model = nextModel;
         input.readOnly = model.status === "error";
-        results = searchTabs(model.tabs, state.query);
+        findMatches = createTabSearch(model.tabs);
+        matches = findMatches(state.query);
+        results = matches.map((match) => match.tab);
         state = setQuery(state, state.query, results);
         render();
       };
