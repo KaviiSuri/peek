@@ -44,4 +44,4 @@ Changes to data handling will be reflected in this policy and the extension's di
 
 ## Contact
 
-For privacy questions, use the developer contact details provided in Peek's Chrome Web Store listing.
+For privacy questions, contact the maintainers through [Peek's issue tracker](https://github.com/KaviiSuri/peek/issues). Do not include sensitive information in a public issue.
