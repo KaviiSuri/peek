@@ -1,6 +1,6 @@
 {
   "name": "peek-chrome-extension",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,8 @@
     "qa:keyboard": "npm run build && node scripts/qa-keyboard.mjs"
   },
   "dependencies": {
-    "effect": "3.22.1"
+    "effect": "3.22.1",
+    "fzf": "0.5.2"
   },
   "devDependencies": {
     "@types/chrome": "0.2.9",
