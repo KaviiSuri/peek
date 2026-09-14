@@ -39,6 +39,7 @@ await Promise.all([
 await Promise.all([
   cp("manifest.json", "dist/manifest.json"),
   cp("fallback.html", "dist/fallback.html"),
+  cp("icons", "dist/icons", { recursive: true }),
 ]);
 
 const sizes = await Promise.all(["background.js", "overlay.js", "fallback.js", "fallback.html"].map(async (file) => ({
